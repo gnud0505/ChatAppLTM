@@ -16,3 +16,5 @@ SOURCE ./create_database.sql
 
 //test database
 gcc ./tests/test.c ./include/db.h ./src/db.c -I/usr/include/mysql -L/usr/lib/x86_64-linux-gnu -lmysqlclient -o ./tests/test.exe
+
+gcc ./tests/test.c ./src/db.c -I/usr/include/mysql -L/usr/lib/x86_64-linux-gnu -lmysqlclient -o ./tests/test.exe

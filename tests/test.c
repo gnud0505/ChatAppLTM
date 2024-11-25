@@ -11,12 +11,13 @@ int main()
         return 1;
     }
 
-    if (mysql_real_connect(conn, "localhost", "root", "", "chat_app", 0, NULL, 0) == NULL)
-    {
-        printf("mysql_real_connect() failed\n");
-        mysql_close(conn);
-        return 1;
-    }
+   if (mysql_real_connect(conn, "localhost", "root", "transyhieu123", "chat_app", 0, NULL, 0) == NULL)
+{
+    printf("mysql_real_connect() failed: %s\n", mysql_error(conn));
+    mysql_close(conn);
+    return 1;
+}
+
 
     printf("Connected to MySQL database successfully!\n");
     mysql_close(conn);
