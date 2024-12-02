@@ -24,4 +24,3 @@ clean:
 	rm -rf $(OBJ_DIR) $(OUT)
 
 .PHONY: clean
-

@@ -16,7 +16,7 @@ typedef struct
 int connect_db(DBConnection *db, const char *host, const char *user, const char *password, const char *dbname);
 
 // Hàm để thực hiện câu lệnh SQL (INSERT, UPDATE, DELETE)
-int execute_query(DBConnection *db, const char *query);
+MYSQL_RES *execute_query(DBConnection *db, const char *query);
 
 // Hàm để lấy kết quả truy vấn (SELECT)
 int fetch_query_result(DBConnection *db, const char *query);
