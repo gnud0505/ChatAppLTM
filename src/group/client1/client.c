@@ -4,7 +4,7 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 
-#define PORT 8083
+#define PORT 8084
 #define BUFFER_SIZE 1024
 #define MAX_GROUP_NAME 50
 #define MAX_MESSAGE_LENGTH 900 // Dành khoảng trống cho "SEND " và group_name
@@ -18,7 +18,10 @@ void print_menu()
     printf("4. Send message\n");
     printf("5. Add member\n");
     printf("6. Remove member\n");
-    printf("7. Exit\n");
+    printf("7. List groups\n");
+    printf("8. List users\n");
+    printf("9. List messages\n");
+    printf("10. Exit\n");
     printf("Choose an option: ");
 }
 
@@ -161,6 +164,56 @@ int main()
             break;
 
         case 7:
+            snprintf(buffer, sizeof(buffer), "LIST_GROUPS");
+            send(client_socket, buffer, strlen(buffer), 0);
+            break;
+
+        case 8:
+            snprintf(buffer, sizeof(buffer), "LIST_USERS");
+            send(client_socket, buffer, strlen(buffer), 0);
+            break;
+
+        case 9: // List Messages
+            printf("Enter group name to list messages: ");
+            fgets(group_name, sizeof(group_name), stdin);
+            group_name[strcspn(group_name, "\n")] = 0;
+
+            if (strlen(group_name) + 14 >= BUFFER_SIZE) // "LIST_MESSAGES " + group_name
+            {
+                printf("Group name too long. Please try again.\n");
+                break;
+            }
+
+            snprintf(buffer, sizeof(buffer), "LIST_MESSAGES %s", group_name);
+            send(client_socket, buffer, strlen(buffer), 0);
+
+            // Nhận phản hồi từ server
+            while (1)
+            {
+                int bytes_received = recv(client_socket, buffer, sizeof(buffer) - 1, 0);
+                if (bytes_received > 0)
+                {
+                    buffer[bytes_received] = '\0';
+
+                    // Kiểm tra nếu server gửi thông báo kết thúc danh sách
+                    if (strcmp(buffer, "END_OF_MESSAGES\n") == 0)
+                    {
+                        printf("End of messages.\n");
+                        break;
+                    }
+
+                    // In từng tin nhắn
+                    printf("Message: %s\n", buffer);
+                }
+                else
+                {
+                    printf("Error receiving data from server.\n");
+                    break;
+                }
+            }
+            break;
+
+        case 10:
             printf("Exiting...\n");
             close(client_socket);
             exit(0);

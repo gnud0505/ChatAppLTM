@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS chat_groups (
 CREATE TABLE IF NOT EXISTS messages (
     id INT AUTO_INCREMENT PRIMARY KEY,
     sender_id INT NOT NULL,
-    receiver_id INT NOT NULL,
+    receiver_id INT DEFAULT NULL,
     message TEXT NOT NULL,
     group_id INT DEFAULT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

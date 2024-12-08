@@ -6,7 +6,7 @@
 #include <pthread.h>
 #include "../../../include/db.h"
 
-#define PORT 8083
+#define PORT 8084
 #define BUFFER_SIZE 1024
 #define MAX_CLIENTS 100
 
@@ -129,52 +129,17 @@ int is_group_member(int user_id, int group_id)
     return is_member;
 }
 
-void broadcast_message(char *group_name, char *message, Client *sender)
+void broadcast_message(int group_id, char *message, Client *sender)
 {
     char query[BUFFER_SIZE];
     MYSQL_RES *res = NULL;
     MYSQL_ROW row;
-    int group_id = -1;
 
     pthread_mutex_lock(&mutex);
 
-    // Truy vấn để lấy group_id từ tên nhóm
+    // Truy vấn lấy danh sách các thành viên trong nhóm
     snprintf(query, sizeof(query),
-             "SELECT id FROM chat_groups WHERE group_name='%s'", group_name);
-    if (mysql_query(db.conn, query) != 0)
-    {
-        fprintf(stderr, "Error querying group_id: %s\n", mysql_error(db.conn));
-        pthread_mutex_unlock(&mutex);
-        return;
-    }
-    res = mysql_store_result(db.conn);
-    if (res == NULL || mysql_num_rows(res) == 0)
-    {
-        send(sender->socket, "Group does not exist.\n", 22, 0);
-        if (res != NULL)
-            mysql_free_result(res);
-        pthread_mutex_unlock(&mutex);
-        return;
-    }
-    row = mysql_fetch_row(res);
-    group_id = atoi(row[0]);
-    mysql_free_result(res);
-
-    // Lưu tin nhắn vào bảng messages
-    snprintf(query, sizeof(query),
-             "INSERT INTO messages (sender_id, message, group_id) "
-             "VALUES (%d, '%s', %d)",
-             sender->id, message, group_id);
-    if (mysql_query(db.conn, query) != 0)
-    {
-        fprintf(stderr, "Error inserting message: %s\n", mysql_error(db.conn));
-        pthread_mutex_unlock(&mutex);
-        return;
-    }
-
-    // Truy vấn lấy danh sách các socket của người dùng trong nhóm
-    snprintf(query, sizeof(query),
-             "SELECT users.socket FROM users "
+             "SELECT users.id FROM users "
              "JOIN group_members ON users.id = group_members.user_id "
              "WHERE group_members.group_id=%d",
              group_id);
@@ -192,19 +157,14 @@ void broadcast_message(char *group_name, char *message, Client *sender)
         return;
     }
 
-    // Gửi tin nhắn đến tất cả các socket
-    while ((row = mysql_fetch_row(res)) != NULL)
+    // Lưu tin nhắn vào bảng messages
+    snprintf(query, sizeof(query),
+             "INSERT INTO messages (sender_id, message, group_id) "
+             "VALUES (%d, '%s', %d)",
+             sender->id, message, group_id);
+    if (mysql_query(db.conn, query) != 0)
     {
-        int socket = atoi(row[0]);
-
-        // Không gửi lại cho người gửi
-        if (socket != sender->socket)
-        {
-            if (send(socket, message, strlen(message), 0) == -1)
-            {
-                perror("Failed to send message");
-            }
-        }
+        fprintf(stderr, "Error inserting message: %s\n", mysql_error(db.conn));
     }
 
     // Giải phóng kết quả truy vấn
@@ -242,6 +202,162 @@ int add_user_to_group(DBConnection *db, int group_id, int user_id, const char *r
         return -1; // Trả về -1 nếu xảy ra lỗi
     }
 
+    return 0; // Trả về 0 nếu thành công
+}
+
+int remove_user_from_group(DBConnection *db, int group_id, int user_id)
+{
+    char query[256];
+    snprintf(query, sizeof(query),
+             "DELETE FROM group_members WHERE group_id = %d AND user_id = %d",
+             group_id, user_id);
+
+    if (mysql_query(db->conn, query))
+    {
+        fprintf(stderr, "Error removing user from group: %s\n", mysql_error(db->conn));
+        return -1; // Trả về -1 nếu xảy ra lỗi
+    }
+
+    return 0; // Trả về 0 nếu thành công
+}
+
+void list_user_groups(DBConnection *db, int user_id, char *result, size_t result_size)
+{
+    char query[256];
+    snprintf(query, sizeof(query),
+             "SELECT g.name FROM groups g "
+             "INNER JOIN group_members gm ON g.id = gm.group_id "
+             "WHERE gm.user_id = %d",
+             user_id);
+
+    if (mysql_query(db->conn, query))
+    {
+        fprintf(stderr, "Error listing groups: %s\n", mysql_error(db->conn));
+        snprintf(result, result_size, "Failed to retrieve groups.\n");
+        return;
+    }
+
+    MYSQL_RES *res = mysql_store_result(db->conn);
+    if (!res)
+    {
+        fprintf(stderr, "Error storing result: %s\n", mysql_error(db->conn));
+        snprintf(result, result_size, "Failed to retrieve groups.\n");
+        return;
+    }
+
+    MYSQL_ROW row;
+    size_t offset = 0;
+    while ((row = mysql_fetch_row(res)))
+    {
+        offset += snprintf(result + offset, result_size - offset, "%s\n", row[0]);
+        if (offset >= result_size)
+            break; // Tránh tràn bộ đệm
+    }
+
+    mysql_free_result(res);
+
+    if (offset == 0)
+    {
+        snprintf(result, result_size, "You are not in any groups.\n");
+    }
+}
+
+void list_users(DBConnection *db, char *result, size_t result_size)
+{
+    char query[256];
+    snprintf(query, sizeof(query), "SELECT username FROM users");
+
+    if (mysql_query(db->conn, query))
+    {
+        fprintf(stderr, "Error listing users: %s\n", mysql_error(db->conn));
+        snprintf(result, result_size, "Failed to retrieve users.\n");
+        return;
+    }
+
+    MYSQL_RES *res = mysql_store_result(db->conn);
+    if (!res)
+    {
+        fprintf(stderr, "Error storing result: %s\n", mysql_error(db->conn));
+        snprintf(result, result_size, "Failed to retrieve users.\n");
+        return;
+    }
+
+    MYSQL_ROW row;
+    size_t offset = 0;
+    while ((row = mysql_fetch_row(res)))
+    {
+        offset += snprintf(result + offset, result_size - offset, "%s\n", row[0]);
+        if (offset >= result_size)
+            break; // Tránh tràn bộ đệm
+    }
+
+    mysql_free_result(res);
+
+    if (offset == 0)
+    {
+        snprintf(result, result_size, "No users found.\n");
+    }
+}
+
+int list_group_messages(DBConnection *db, int group_id, int user_id, int client_socket)
+{
+    char query[BUFFER_SIZE];
+    MYSQL_RES *res = NULL;
+    MYSQL_ROW row;
+
+    // Kiểm tra nếu người dùng là thành viên của nhóm
+    if (!is_group_member(user_id, group_id))
+    {
+        send(client_socket, "You are not a member of this group.\n", 37, 0);
+        return -1; // Trả về -1 nếu người dùng không phải thành viên
+    }
+
+    // Truy vấn tin nhắn từ nhóm
+    snprintf(query, sizeof(query),
+             "SELECT m.id AS message_id, m.sender_id, m.message "
+             "FROM messages m "
+             "WHERE m.group_id = %d "
+             "ORDER BY m.created_at ASC",
+             group_id);
+
+    if (mysql_query(db->conn, query) != 0)
+    {
+        fprintf(stderr, "Error querying group messages: %s\n", mysql_error(db->conn));
+        send(client_socket, "Error retrieving group messages.\n", 33, 0);
+        return -1; // Trả về -1 nếu có lỗi
+    }
+
+    res = mysql_store_result(db->conn);
+    if (res == NULL)
+    {
+        fprintf(stderr, "Error storing result: %s\n", mysql_error(db->conn));
+        send(client_socket, "Error retrieving group messages.\n", 33, 0);
+        return -1; // Trả về -1 nếu không có kết quả
+    }
+
+    // Gửi danh sách tin nhắn tới client
+    char message_buffer[BUFFER_SIZE];
+    int message_count = 0;
+    while ((row = mysql_fetch_row(res)) != NULL)
+    {
+        snprintf(message_buffer, sizeof(message_buffer), "Message ID: %s | Sender ID: %s | Message: %s\n",
+                 row[0],  // message_id
+                 row[1],  // sender_id
+                 row[2]); // message
+        send(client_socket, message_buffer, strlen(message_buffer), 0);
+        message_count++;
+    }
+
+    if (message_count == 0)
+    {
+        send(client_socket, "No messages in this group.\n", 26, 0);
+    }
+    else
+    {
+        send(client_socket, "END_OF_MESSAGES\n", 17, 0);
+    }
+
+    mysql_free_result(res);
     return 0; // Trả về 0 nếu thành công
 }
 
@@ -343,7 +459,7 @@ void handle_client(void *arg)
             }
             pthread_mutex_unlock(&mutex);
         }
-        if (strncmp(buffer, "ADD_MEMBER", 10) == 0)
+        else if (strncmp(buffer, "ADD_MEMBER", 10) == 0)
         {
             char group_name[50], username_to_add[50];
             sscanf(buffer + 11, "%s %s", group_name, username_to_add);
@@ -389,8 +505,122 @@ void handle_client(void *arg)
                 continue; // Quay lại nhận dữ liệu mới
             }
 
+            int group_id = get_group_id(group_name);
+            if (group_id == -1)
+            {
+                send(client->socket, "Group not found.\n", 17, 0);
+            }
+            else
+            {
+                // Gọi hàm broadcast_message
+                broadcast_message(group_id, message, client);
+            }
+
+            // Gửi xác nhận lại cho người gửi
+            send(client->socket, "Message sent successfully.\n", 27, 0);
+            pthread_mutex_unlock(&mutex);
+        }
+        else if (strncmp(buffer, "REMOVE_MEMBER", 13) == 0)
+        {
+            char group_name[50], username_to_remove[50];
+            sscanf(buffer + 14, "%s %s", group_name, username_to_remove);
+
             pthread_mutex_lock(&mutex);
-            broadcast_message(group_name, message, client);
+
+            int group_id = get_group_id(group_name);
+            if (group_id == -1)
+            {
+                send(client->socket, "Group does not exist.\n", 22, 0);
+            }
+            else if (is_group_admin(client->id, group_id))
+            {
+                send(client->socket, "You are not an admin of this group.\n", 37, 0);
+            }
+            else
+            {
+                int user_id_to_remove = get_user_id(username_to_remove);
+                if (user_id_to_remove == -1)
+                {
+                    send(client->socket, "User does not exist.\n", 21, 0);
+                }
+                else if (remove_user_from_group(&db, group_id, user_id_to_remove) == 0)
+                {
+                    send(client->socket, "User removed from the group successfully.\n", 42, 0);
+                }
+                else
+                {
+                    send(client->socket, "Failed to remove user from the group.\n", 38, 0);
+                }
+            }
+
+            pthread_mutex_unlock(&mutex);
+        }
+        else if (strncmp(buffer, "LEAVE_GROUP", 11) == 0)
+        {
+            char group_name[50];
+            sscanf(buffer + 12, "%s", group_name);
+
+            pthread_mutex_lock(&mutex);
+
+            int group_id = get_group_id(group_name);
+            if (group_id == -1)
+            {
+                send(client->socket, "Group not found.\n", 17, 0);
+            }
+            else if (!is_group_member(client->id, group_id))
+            {
+                send(client->socket, "You are not a member of this group.\n", 36, 0);
+            }
+            else if (remove_user_from_group(&db, group_id, client->id) == 0)
+            {
+                send(client->socket, "You have left the group successfully.\n", 39, 0);
+            }
+            else
+            {
+                send(client->socket, "Failed to leave the group.\n", 27, 0);
+            }
+
+            pthread_mutex_unlock(&mutex);
+        }
+        else if (strncmp(buffer, "LIST_GROUPS", 11) == 0)
+        {
+            char response[BUFFER_SIZE] = {0};
+
+            pthread_mutex_lock(&mutex);
+            list_user_groups(&db, client->id, response, sizeof(response));
+            pthread_mutex_unlock(&mutex);
+
+            send(client->socket, response, strlen(response), 0);
+        }
+        else if (strncmp(buffer, "LIST_USERS", 10) == 0)
+        {
+            char response[BUFFER_SIZE] = {0};
+
+            pthread_mutex_lock(&mutex);
+            list_users(&db, response, sizeof(response));
+            pthread_mutex_unlock(&mutex);
+
+            send(client->socket, response, strlen(response), 0);
+        }
+        else if (strncmp(buffer, "LIST_GROUP_MESSAGES", 19) == 0)
+        {
+            char group_name[50];
+            sscanf(buffer + 20, "%s", group_name);
+
+            pthread_mutex_lock(&mutex);
+            int group_id = get_group_id(group_name);
+            if (group_id == -1)
+            {
+                send(client->socket, "Group not found.\n", 17, 0);
+            }
+            else
+            {
+                int result = list_group_messages(&db, group_id, client->id, client->socket);
+                if (result == -1)
+                {
+                    send(client->socket, "Failed to retrieve messages.\n", 28, 0);
+                }
+            }
             pthread_mutex_unlock(&mutex);
         }
     }
