@@ -167,6 +167,37 @@ void broadcast_message(int group_id, char *message, Client *sender)
         fprintf(stderr, "Error inserting message: %s\n", mysql_error(db.conn));
     }
 
+    // Tạo tin nhắn đã định dạng
+    char formatted_message[BUFFER_SIZE];
+    snprintf(formatted_message, sizeof(formatted_message),
+             "[%s]: %s\n", sender->username, message);
+
+    // Duyệt qua mảng clients và gửi tin nhắn tới các thành viên thuộc nhóm
+    while ((row = mysql_fetch_row(res)) != NULL)
+    {
+        int member_id = atoi(row[0]);
+
+        // Kiểm tra nếu client nào có ID trùng với member_id
+        for (int i = 0; i < client_count; i++)
+        {
+            if (clients[i] != NULL && clients[i]->id == member_id)
+            {
+                // Bỏ qua người gửi
+                if (clients[i]->socket != sender->socket)
+                {
+                    if (send(clients[i]->socket, "START_SEND_MESSAGE", strlen("START_SEND_MESSAGE"), 0) < 0)
+                    {
+                        fprintf(stderr, "Failed to send message to socket %d\n", clients[i]->socket);
+                    }
+                    if (send(clients[i]->socket, formatted_message, strlen(formatted_message), 0) < 0)
+                    {
+                        fprintf(stderr, "Failed to send message to socket %d\n", clients[i]->socket);
+                    }
+                }
+            }
+        }
+    }
+
     // Giải phóng kết quả truy vấn
     mysql_free_result(res);
 
@@ -225,7 +256,7 @@ void list_user_groups(DBConnection *db, int user_id, char *result, size_t result
 {
     char query[256];
     snprintf(query, sizeof(query),
-             "SELECT g.name FROM groups g "
+             "SELECT g.group_name FROM chat_groups g "
              "INNER JOIN group_members gm ON g.id = gm.group_id "
              "WHERE gm.user_id = %d",
              user_id);
@@ -299,20 +330,9 @@ void list_users(DBConnection *db, char *result, size_t result_size)
     }
 }
 
-int list_group_messages(DBConnection *db, int group_id, int user_id, int client_socket)
+void list_group_messages(DBConnection *db, int group_id, int user_id, char *result, size_t result_size)
 {
-    char query[BUFFER_SIZE];
-    MYSQL_RES *res = NULL;
-    MYSQL_ROW row;
-
-    // Kiểm tra nếu người dùng là thành viên của nhóm
-    if (!is_group_member(user_id, group_id))
-    {
-        send(client_socket, "You are not a member of this group.\n", 37, 0);
-        return -1; // Trả về -1 nếu người dùng không phải thành viên
-    }
-
-    // Truy vấn tin nhắn từ nhóm
+    char query[256];
     snprintf(query, sizeof(query),
              "SELECT m.id AS message_id, m.sender_id, m.message "
              "FROM messages m "
@@ -320,45 +340,36 @@ int list_group_messages(DBConnection *db, int group_id, int user_id, int client_
              "ORDER BY m.created_at ASC",
              group_id);
 
-    if (mysql_query(db->conn, query) != 0)
+    if (mysql_query(db->conn, query))
     {
         fprintf(stderr, "Error querying group messages: %s\n", mysql_error(db->conn));
-        send(client_socket, "Error retrieving group messages.\n", 33, 0);
-        return -1; // Trả về -1 nếu có lỗi
+        snprintf(result, result_size, "Failed to retrieve messages.\n");
+        return;
     }
 
-    res = mysql_store_result(db->conn);
-    if (res == NULL)
+    MYSQL_RES *res = mysql_store_result(db->conn);
+    if (!res)
     {
         fprintf(stderr, "Error storing result: %s\n", mysql_error(db->conn));
-        send(client_socket, "Error retrieving group messages.\n", 33, 0);
-        return -1; // Trả về -1 nếu không có kết quả
+        snprintf(result, result_size, "Failed to retrieve messages.\n");
+        return;
     }
 
-    // Gửi danh sách tin nhắn tới client
-    char message_buffer[BUFFER_SIZE];
-    int message_count = 0;
-    while ((row = mysql_fetch_row(res)) != NULL)
+    MYSQL_ROW row;
+    size_t offset = 0;
+    while ((row = mysql_fetch_row(res)))
     {
-        snprintf(message_buffer, sizeof(message_buffer), "Message ID: %s | Sender ID: %s | Message: %s\n",
-                 row[0],  // message_id
-                 row[1],  // sender_id
-                 row[2]); // message
-        send(client_socket, message_buffer, strlen(message_buffer), 0);
-        message_count++;
-    }
-
-    if (message_count == 0)
-    {
-        send(client_socket, "No messages in this group.\n", 26, 0);
-    }
-    else
-    {
-        send(client_socket, "END_OF_MESSAGES\n", 17, 0);
+        offset += snprintf(result + offset, result_size - offset, "%s\n", row[0]);
+        if (offset >= result_size)
+            break; // Tránh tràn bộ đệm
     }
 
     mysql_free_result(res);
-    return 0; // Trả về 0 nếu thành công
+
+    if (offset == 0)
+    {
+        snprintf(result, result_size, "No messages in this group.\n");
+    }
 }
 
 void handle_client(void *arg)
@@ -605,23 +616,23 @@ void handle_client(void *arg)
         else if (strncmp(buffer, "LIST_GROUP_MESSAGES", 19) == 0)
         {
             char group_name[50];
+            char response[BUFFER_SIZE] = {0};
+
             sscanf(buffer + 20, "%s", group_name);
 
             pthread_mutex_lock(&mutex);
             int group_id = get_group_id(group_name);
             if (group_id == -1)
             {
-                send(client->socket, "Group not found.\n", 17, 0);
+                snprintf(response, sizeof(response), "Group not found.\n");
             }
             else
             {
-                int result = list_group_messages(&db, group_id, client->id, client->socket);
-                if (result == -1)
-                {
-                    send(client->socket, "Failed to retrieve messages.\n", 28, 0);
-                }
+                list_group_messages(&db, group_id, client->id, response, sizeof(response));
             }
             pthread_mutex_unlock(&mutex);
+
+            send(client->socket, response, strlen(response), 0);
         }
     }
 }

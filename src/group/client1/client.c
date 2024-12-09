@@ -186,31 +186,6 @@ int main()
 
             snprintf(buffer, sizeof(buffer), "LIST_MESSAGES %s", group_name);
             send(client_socket, buffer, strlen(buffer), 0);
-
-            // Nhận phản hồi từ server
-            while (1)
-            {
-                int bytes_received = recv(client_socket, buffer, sizeof(buffer) - 1, 0);
-                if (bytes_received > 0)
-                {
-                    buffer[bytes_received] = '\0';
-
-                    // Kiểm tra nếu server gửi thông báo kết thúc danh sách
-                    if (strcmp(buffer, "END_OF_MESSAGES\n") == 0)
-                    {
-                        printf("End of messages.\n");
-                        break;
-                    }
-
-                    // In từng tin nhắn
-                    printf("Message: %s\n", buffer);
-                }
-                else
-                {
-                    printf("Error receiving data from server.\n");
-                    break;
-                }
-            }
             break;
 
         case 10:
@@ -227,7 +202,23 @@ int main()
         if (bytes_received > 0)
         {
             buffer[bytes_received] = '\0';
-            printf("Server: %s\n", buffer);
+            if (strcmp(buffer, "START_SEND_MESSAGE") == 0)
+            {
+                bytes_received = recv(client_socket, buffer, sizeof(buffer) - 1, 0);
+                if (bytes_received > 0)
+                {
+                    buffer[bytes_received] = '\0';
+                    printf("%s\n", buffer);
+                }
+                bytes_received = recv(client_socket, buffer, sizeof(buffer) - 1, 0);
+                if (bytes_received > 0)
+                {
+                    buffer[bytes_received] = '\0';
+                    printf("%s\n", buffer);
+                }
+            }
+            else
+                printf("Server: %s\n", buffer);
         }
     }
 
