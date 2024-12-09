@@ -62,15 +62,6 @@ int fetch_query_result(DBConnection *db, const char *query)
     return EXIT_SUCCESS;
 }
 
-int create_user(DBConnection *db, const char *username, const char *email, const char *password)
-{
-    char query[1024];
-    snprintf(query, sizeof(query), "INSERT INTO users (username, email, password) VALUES ('%s', '%s', '%s')",
-             username, email, password); // Cần mã hóa mật khẩu trước khi thêm vào
-
-    return execute_query(db, query);
-}
-
 // Hàm đóng kết nối cơ sở dữ liệu
 void close_db(DBConnection *db)
 {
