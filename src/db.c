@@ -24,14 +24,14 @@ int connect_db(DBConnection *db, const char *host, const char *user, const char 
 }
 
 // Hàm thực thi câu lệnh SQL (INSERT, UPDATE, DELETE)
-int execute_query(DBConnection *db, const char *query)
+MYSQL_RES *execute_query(DBConnection *db, const char *query)
 {
     if (mysql_query(db->conn, query))
     {
-        fprintf(stderr, "QUERY FAILED: %s\n", mysql_error(db->conn));
-        return EXIT_FAILURE;
+        fprintf(stderr, "MySQL query error: %s\n", mysql_error(db->conn));
+        return NULL;
     }
-    return EXIT_SUCCESS;
+    return mysql_store_result(db->conn);
 }
 
 // Hàm lấy kết quả của câu lệnh SELECT
