@@ -8,6 +8,7 @@ INCLUDE_DIR = /usr/include/mysql  # Đảm bảo rằng thư mục này có file
 SRC_DIR = src
 OBJ_DIR = obj
 SRC = $(SRC_DIR)/main.c $(SRC_DIR)/gui.c $(SRC_DIR)/db.c  # Đảm bảo thêm db.c vào
+OBJ = $(OBJ_DIR)/main.o $(OBJ_DIR)/gui.o $(OBJ_DIR)/db.o
 
 # Tên output
 OUT = chat_app
@@ -24,4 +25,3 @@ clean:
 	rm -rf $(OBJ_DIR) $(OUT)
 
 .PHONY: clean
-
