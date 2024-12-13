@@ -3,8 +3,9 @@
 #include <string.h>
 #include <unistd.h>
 #include <arpa/inet.h>
+#include <sys/select.h>
 
-#define PORT 8084
+#define PORT 8086
 #define BUFFER_SIZE 1024
 #define MAX_GROUP_NAME 50
 #define MAX_MESSAGE_LENGTH 900 // Dành khoảng trống cho "SEND " và group_name
@@ -30,6 +31,8 @@ int main()
     int client_socket;
     struct sockaddr_in server_address;
     char buffer[BUFFER_SIZE];
+    int valread;
+    fd_set read_fds;
     char username[50];
     char password[50];
     char email[100];
@@ -73,7 +76,7 @@ int main()
     email[strcspn(email, "\n")] = 0; // Loại bỏ ký tự newline
 
     // Gửi username, password, và email đến server
-    snprintf(buffer, sizeof(buffer), "%s %s %s", username, password, email);
+    snprintf(buffer, sizeof(buffer), "%s:%s:%s", username, password, email);
     send(client_socket, buffer, strlen(buffer), 0);
 
     while (1)
@@ -113,18 +116,10 @@ int main()
             printf("Enter group name: ");
             fgets(group_name, sizeof(group_name), stdin);
             group_name[strcspn(group_name, "\n")] = 0;
-            printf("Enter your message: ");
-            fgets(message, sizeof(message), stdin);
-            message[strcspn(message, "\n")] = 0;
 
-            if (strlen(group_name) + strlen(message) + 5 >= BUFFER_SIZE)
-            {
-                printf("Message too long. Please try again.\n");
-                break;
-            }
-
-            snprintf(buffer, sizeof(buffer), "SEND %s %s", group_name, message);
+            snprintf(buffer, sizeof(buffer), "SEND %s", group_name);
             send(client_socket, buffer, strlen(buffer), 0);
+
             break;
 
         case 5:
@@ -197,28 +192,79 @@ int main()
             printf("Invalid option. Please try again.\n");
         }
 
-        // Nhận phản hồi từ server
-        int bytes_received = recv(client_socket, buffer, sizeof(buffer) - 1, 0);
-        if (bytes_received > 0)
+        FD_ZERO(&read_fds);
+        FD_SET(client_socket, &read_fds);
+        FD_SET(STDIN_FILENO, &read_fds);
+
+        int max_sd = client_socket > STDIN_FILENO ? client_socket : STDIN_FILENO;
+        int activity = select(max_sd + 1, &read_fds, NULL, NULL, NULL);
+
+        if (activity > 0)
         {
-            buffer[bytes_received] = '\0';
-            if (strcmp(buffer, "START_SEND_MESSAGE") == 0)
+            // Kiểm tra tin nhắn từ server
+            if (FD_ISSET(client_socket, &read_fds))
             {
-                bytes_received = recv(client_socket, buffer, sizeof(buffer) - 1, 0);
-                if (bytes_received > 0)
+                valread = recv(client_socket, buffer, sizeof(buffer), 0);
+                if (valread <= 0)
                 {
-                    buffer[bytes_received] = '\0';
-                    printf("%s\n", buffer);
+                    printf("Mất kết nối với server.\n");
+                    close(client_socket);
+                    break;
                 }
-                bytes_received = recv(client_socket, buffer, sizeof(buffer) - 1, 0);
-                if (bytes_received > 0)
+                else
                 {
-                    buffer[bytes_received] = '\0';
-                    printf("%s\n", buffer);
+                    buffer[valread] = '\0';
+                    printf("%d\n", strncmp(buffer, "SENDING", 7) == 0);
+                    if (strncmp(buffer, "SENDING", 7) == 0)
+                    {
+                        printf("sending mode\n ------------------\n");
+                        while (1)
+                        {
+                            FD_ZERO(&read_fds);
+                            FD_SET(client_socket, &read_fds);
+                            FD_SET(STDIN_FILENO, &read_fds);
+
+                            int max_sd = client_socket > STDIN_FILENO ? client_socket : STDIN_FILENO;
+                            int activity = select(max_sd + 1, &read_fds, NULL, NULL, NULL);
+
+                            if (activity > 0)
+                            {
+                                // Kiểm tra tin nhắn từ server trước
+                                if (FD_ISSET(client_socket, &read_fds))
+                                {
+                                    valread = recv(client_socket, buffer, sizeof(buffer), 0);
+                                    if (valread <= 0)
+                                    {
+                                        printf("Mất kết nối với server.\n");
+                                        close(client_socket);
+                                        break;
+                                    }
+                                    else
+                                    {
+                                        buffer[valread] = '\0';
+                                        printf("%s\n", buffer);
+                                        if (strcmp(buffer, "EXIT") == 0)
+                                            break;
+                                    }
+                                }
+
+                                // Kiểm tra tin nhắn từ người dùng
+                                if (FD_ISSET(STDIN_FILENO, &read_fds))
+                                {
+                                    fgets(message, sizeof(message), stdin);
+                                    message[strcspn(message, "\n")] = 0;
+                                    snprintf(buffer, sizeof(buffer), "MESSAGE %s", message);
+                                    send(client_socket, buffer, strlen(buffer), 0);
+                                    if (strcmp(message, "EXIT") == 0)
+                                        break;
+                                }
+                            }
+                        }
+                    }
+                    else
+                        printf("%s", buffer);
                 }
             }
-            else
-                printf("Server: %s\n", buffer);
         }
     }
 
