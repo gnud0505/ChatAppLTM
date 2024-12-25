@@ -1,4 +1,11 @@
-#include "../include/common.h"
+// client/src/utils.c
+
+#include "utils.h"
+#include <stdlib.h>
+#include <arpa/inet.h>
+#include <string.h>
+#include <unistd.h>
+#include <errno.h>
 
 void handle_error(const char *message) {
     perror(message);
@@ -6,29 +13,29 @@ void handle_error(const char *message) {
 }
 
 int send_all(int sock, const void *buffer, size_t length) {
-    size_t total_sent = 0;
+    size_t totalSent = 0;
     const char *ptr = buffer;
-    while (total_sent < length) {
-        ssize_t sent = send(sock, ptr + total_sent, length - total_sent, 0);
-        if (sent <= 0) {
-            return -1;
+    while (totalSent < length) {
+        ssize_t bytesSent = send(sock, ptr + totalSent, length - totalSent, 0);
+        if (bytesSent <= 0) {
+            return -1; // Lỗi khi gửi
         }
-        total_sent += sent;
+        totalSent += bytesSent;
     }
-    return 0;
+    return 0; // Gửi thành công
 }
 
 int recv_all(int sock, void *buffer, size_t length) {
-    size_t total_received = 0;
+    size_t totalReceived = 0;
     char *ptr = buffer;
-    while (total_received < length) {
-        ssize_t received = recv(sock, ptr + total_received, length - total_received, 0);
-        if (received <= 0) {
-            return -1;
+    while (totalReceived < length) {
+        ssize_t bytesReceived = recv(sock, ptr + totalReceived, length - totalReceived, 0);
+        if (bytesReceived <= 0) {
+            return -1; // Lỗi hoặc kết nối đóng
         }
-        total_received += received;
+        totalReceived += bytesReceived;
     }
-    return total_received;
+    return totalReceived;
 }
 
 uint64_t htonll(uint64_t value) {

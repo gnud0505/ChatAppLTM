@@ -1,40 +1,48 @@
+// server/src/chat.c
+
 #include "../include/chat.h"
-#include "../include/common.h"
 #include "../include/utils.h"
-#include "../include/db.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#define BUFFER_SIZE 1024
 
-void handle_chat(int client_sock, DBConnection *db, const char *username) {
-    char buffer[BUFFER_SIZE];
-    while (1) {
-        // Receive a message command
-        memset(buffer, 0, BUFFER_SIZE);
-        if (recv_all(client_sock, buffer, sizeof(buffer)) <= 0) {
-            printf("Client %s disconnected from chat.\n", username);
-            break;
-        }
-
-        if (strncmp(buffer, "SEND_MSG", 8) == 0) {
-            // Parse message: "SEND_MSG <recipient_username> <message>"
-            char recipient[50];
-            char message[BUFFER_SIZE];
-            sscanf(buffer + 9, "%s %[^\n]", recipient, message);
-
-            // Lookup recipient's socket
-            int recipient_sock = find_user_socket(recipient); // Implement find_user_socket
-            if (recipient_sock != -1) {
-                // Forward the message
-                char formatted_message[BUFFER_SIZE];
-                snprintf(formatted_message, sizeof(formatted_message), "MESSAGE_FROM %s: %s", username, message);
-                send_all(recipient_sock, formatted_message, strlen(formatted_message));
-                send_all(client_sock, "Message sent.", strlen("Message sent."));
-            } else {
-                send_all(client_sock, "User not online.", strlen("User not online."));
-            }
-        }
-        else if (strncmp(buffer, "EXIT_CHAT", 9) == 0) {
-            printf("Client %s exited chat.\n", username);
-            break;
-        }
-        // Handle other chat-related commands
+void handle_private_message(DBConnection *db, int sender_id, const char *recipient_username, const char *message, int client_sock) {
+    // Tìm user_id của người nhận
+    char query[BUFFER_SIZE];
+    snprintf(query, sizeof(query), "SELECT id FROM users WHERE username='%s'", recipient_username);
+    MYSQL_RES *res = execute_query(db, query);
+    if (res == NULL) {
+        send_response(client_sock, "Recipient not found.\n");
+        return;
     }
+
+    MYSQL_ROW row = mysql_fetch_row(res);
+    if (row == NULL) {
+        send_response(client_sock, "Recipient not found.\n");
+        mysql_free_result(res);
+        return;
+    }
+
+    int recipient_id = atoi(row[0]);
+    mysql_free_result(res);
+
+    // Lưu tin nhắn vào cơ sở dữ liệu
+    snprintf(query, sizeof(query),
+             "INSERT INTO messages (sender_id, receiver_id, message) VALUES (%d, %d, '%s')",
+             sender_id, recipient_id, message);
+    if (execute_query(db, query) == NULL) {
+        send_response(client_sock, "Failed to send message.\n");
+        return;
+    }
+
+    // TODO: Gửi tin nhắn tới người nhận nếu họ đang online
+    // Bạn cần triển khai cơ chế quản lý các kết nối đang online để tìm socket của người nhận
+    // Ví dụ: bạn có thể sử dụng một danh sách các client đang kết nối và tìm socket dựa trên user_id
+
+    send_response(client_sock, "Message sent successfully.\n");
+}
+
+void send_message_to_user(int recipient_sock, const char *message) {
+    send(recipient_sock, message, strlen(message), 0);
 }

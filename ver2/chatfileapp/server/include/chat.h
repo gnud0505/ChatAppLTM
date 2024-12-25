@@ -1,8 +1,14 @@
-#ifndef CHAT_H
-#define CHAT_H
+// server/include/chat.h
 
-#include "db.h"
+#ifndef SERVER_CHAT_H
+#define SERVER_CHAT_H
 
-void handle_chat(int client_sock, DBConnection *db, const char *username);
+#include "../include/db.h"
 
-#endif // CHAT_H
+// Hàm xử lý tin nhắn 1-1
+void handle_private_message(DBConnection *db, int sender_id, const char *recipient_username, const char *message, int client_sock);
+
+// Hàm gửi tin nhắn tới người nhận
+void send_message_to_user(int recipient_sock, const char *message);
+
+#endif // SERVER_CHAT_H

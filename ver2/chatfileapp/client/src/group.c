@@ -1,77 +1,63 @@
+// client/src/group.c
+
 #include "../include/group.h"
-#include "../include/common.h"
 #include "../include/utils.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
 
-void handle_group(int sock, const char *username) {
-    int choice;
-    char group_name[50];
-    char member_username[50];
+#define BUFFER_SIZE 1024
+
+int init_group(int sock, const char *username) {
+    // Không cần khởi tạo gì đặc biệt tại client cho nhóm
+    return 0;
+}
+
+void create_group(int sock, const char *group_name) {
     char buffer[BUFFER_SIZE];
-    
-    printf("\nGroup Chat Options:\n");
-    printf("1. Create Group\n2. Join Group\n3. Leave Group\n4. Add Member\n5. Remove Member\n6. List Groups\n7. List Users\n8. Back\nChoose an option: ");
-    scanf("%d", &choice);
-    getchar(); // Consume newline
+    snprintf(buffer, sizeof(buffer), "CREATE_GROUP %s", group_name);
+    send(sock, buffer, strlen(buffer), 0);
+}
 
-    switch (choice) {
-        case 1:
-            printf("Enter group name to create: ");
-            fgets(group_name, sizeof(group_name), stdin);
-            group_name[strcspn(group_name, "\n")] = '\0';
-            snprintf(buffer, sizeof(buffer), "CREATE_GROUP %s", group_name);
-            send_all(sock, buffer, strlen(buffer));
-            break;
-        case 2:
-            printf("Enter group name to join: ");
-            fgets(group_name, sizeof(group_name), stdin);
-            group_name[strcspn(group_name, "\n")] = '\0';
-            snprintf(buffer, sizeof(buffer), "JOIN_GROUP %s", group_name);
-            send_all(sock, buffer, strlen(buffer));
-            break;
-        case 3:
-            printf("Enter group name to leave: ");
-            fgets(group_name, sizeof(group_name), stdin);
-            group_name[strcspn(group_name, "\n")] = '\0';
-            snprintf(buffer, sizeof(buffer), "LEAVE_GROUP %s", group_name);
-            send_all(sock, buffer, strlen(buffer));
-            break;
-        case 4:
-            printf("Enter group name to add member: ");
-            fgets(group_name, sizeof(group_name), stdin);
-            group_name[strcspn(group_name, "\n")] = '\0';
-            printf("Enter username of member to add: ");
-            fgets(member_username, sizeof(member_username), stdin);
-            member_username[strcspn(member_username, "\n")] = '\0';
-            snprintf(buffer, sizeof(buffer), "ADD_MEMBER %s %s", group_name, member_username);
-            send_all(sock, buffer, strlen(buffer));
-            break;
-        case 5:
-            printf("Enter group name to remove member: ");
-            fgets(group_name, sizeof(group_name), stdin);
-            group_name[strcspn(group_name, "\n")] = '\0';
-            printf("Enter username of member to remove: ");
-            fgets(member_username, sizeof(member_username), stdin);
-            member_username[strcspn(member_username, "\n")] = '\0';
-            snprintf(buffer, sizeof(buffer), "REMOVE_MEMBER %s %s", group_name, member_username);
-            send_all(sock, buffer, strlen(buffer));
-            break;
-        case 6:
-            snprintf(buffer, sizeof(buffer), "LIST_GROUPS");
-            send_all(sock, buffer, strlen(buffer));
-            break;
-        case 7:
-            snprintf(buffer, sizeof(buffer), "LIST_USERS");
-            send_all(sock, buffer, strlen(buffer));
-            break;
-        case 8:
-            return;
-        default:
-            printf("Invalid choice.\n");
-            return;
-    }
+void join_group(int sock, const char *group_name) {
+    char buffer[BUFFER_SIZE];
+    snprintf(buffer, sizeof(buffer), "JOIN_GROUP %s", group_name);
+    send(sock, buffer, strlen(buffer), 0);
+}
 
-    // Receive and display server response
-    memset(buffer, 0, BUFFER_SIZE);
-    recv_all(sock, buffer, sizeof(buffer));
-    printf("Server: %s\n", buffer);
+void leave_group(int sock, const char *group_name) {
+    char buffer[BUFFER_SIZE];
+    snprintf(buffer, sizeof(buffer), "LEAVE_GROUP %s", group_name);
+    send(sock, buffer, strlen(buffer), 0);
+}
+
+void send_group_message(int sock, const char *group_name, const char *message) {
+    char buffer[BUFFER_SIZE];
+    snprintf(buffer, sizeof(buffer), "SEND %s %s", group_name, message);
+    send(sock, buffer, strlen(buffer), 0);
+}
+
+void add_member(int sock, const char *group_name, const char *member_username) {
+    char buffer[BUFFER_SIZE];
+    snprintf(buffer, sizeof(buffer), "ADD_MEMBER %s %s", group_name, member_username);
+    send(sock, buffer, strlen(buffer), 0);
+}
+
+void remove_member(int sock, const char *group_name, const char *member_username) {
+    char buffer[BUFFER_SIZE];
+    snprintf(buffer, sizeof(buffer), "REMOVE_MEMBER %s %s", group_name, member_username);
+    send(sock, buffer, strlen(buffer), 0);
+}
+
+void list_groups(int sock) {
+    char buffer[BUFFER_SIZE];
+    snprintf(buffer, sizeof(buffer), "LIST_GROUPS");
+    send(sock, buffer, strlen(buffer), 0);
+}
+
+void list_users(int sock) {
+    char buffer[BUFFER_SIZE];
+    snprintf(buffer, sizeof(buffer), "LIST_USERS");
+    send(sock, buffer, strlen(buffer), 0);
 }

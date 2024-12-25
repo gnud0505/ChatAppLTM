@@ -1,6 +1,9 @@
+// server/src/db.c
+
 #include "../include/db.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 // Hàm kết nối đến cơ sở dữ liệu
 int connect_db(DBConnection *db, const char *host, const char *user, const char *password, const char *dbname) {
@@ -27,7 +30,7 @@ MYSQL_RES *execute_query(DBConnection *db, const char *query) {
     return mysql_store_result(db->conn);
 }
 
-// Hàm lấy kết quả của câu lệnh SELECT
+// Hàm lấy kết quả truy vấn (SELECT)
 int fetch_query_result(DBConnection *db, const char *query) {
     if (mysql_query(db->conn, query)) {
         fprintf(stderr, "QUERY FAILED: %s\n", mysql_error(db->conn));
@@ -40,13 +43,15 @@ int fetch_query_result(DBConnection *db, const char *query) {
         return EXIT_FAILURE;
     }
 
-    // In kết quả truy vấn ra (hoặc xử lý tùy theo nhu cầu)
+    // In kết quả truy vấn ra (nếu cần thiết)
+    /*
     while ((db->row = mysql_fetch_row(db->res)) != NULL) {
         for (int i = 0; i < mysql_num_fields(db->res); i++) {
             printf("%s ", db->row[i] ? db->row[i] : "NULL");
         }
         printf("\n");
     }
+    */
     return EXIT_SUCCESS;
 }
 

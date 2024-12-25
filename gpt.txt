@@ -22,6 +22,7 @@ mô hình của tôi là tạo một ứng dụng sử dụng socket để tạo
 
  các phần sau là phần source code tôi đã hoàn thành, hãy giúp tôi kết hợp, phần tách thành các file code phù hợp, sửa lại và hoàn thiện để phù hợp với yêu cầu tôi đã đưa ra ở dưới:
 
+Tôi đã có những code đang phát triển, bạn có thể tham khảo các file code và cấu trúc thư mục sau, sau đó xem xét và kết hợp một cách hợp lý 
   Về cấu trúc thư mục và các file source tôi đã có bao gồm:                                                  ./client/client.c (mục đích để ghép các module nhỏ như chat, tạo nhóm, gửi file)                                               ./server/server.c (tương tự folder client)                                                                                                           ./include (gồm các file .h) trong đó có db.h nội dung: // db.h
 #ifndef DB_H
 #define DB_H
