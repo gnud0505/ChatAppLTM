@@ -1,0 +1,3062 @@
+xin chào, tôi đang có một project về môn học lập trình mạng, bạn có thể giúp tôi hoàn thiện được không
+
+mô hình của tôi là tạo một ứng dụng sử dụng socket để tạo 1 hệ thống đa luồng, về một ứng dụng chat, có thể nhắn 1 1 hoặc tạo nhóm chat, gồm các yêu câu sau đây: Kết hợp 2 đề tài Xây dựng ứng dụng chat và Xây dựng ứng dụng chia sẻ file. Trong ứng dụng chat có chức năng chia sẻ file. Chi tiết:
+"Ứng dụng có các chức năng sau:
+ - Quản lý đăng kí, đăng nhập người dùng. 
+ - Khi 1 user đăng nhập thành công, cung cấp danh sách các user khác đang online 
+ - User gửi và nhận thông điệp 1-1 với user khác 
+ - Khi có 1 trong 2 user ngắt kết nối hoặc yêu cầu dừng cuộc trò chuyện, thông báo cho bên còn lại biết. 
+ - Cho phép user chuyển sang cuộc trò chuyện khác (với user khác nếu cần)
+
+ - Tạo và gửi tin trong nhóm chat: 
+ + User tạo nhóm chat
+ + User gửi yêu cầu tham gia nhóm tới các user khác
+ + Tham gia và rời nhóm chat
+ + Gửi thông điệp tới các nhóm
+ + Thêm hoặc xóa thành viên (chỉ chủ nhóm)
+
+ - Gửi và lưu tin nhắn offline
+ - Chức năng gửi file:
+ + Cho phép upload và download file từ/lên server từ người dùng 
+ + Xây dựng tính năng cho phép tìm kiếm theo tên file cho người dùng, cho phép lựa chọn tải file từ kết quả tìm kiếm  .
+
+ các phần sau là phần source code tôi đã hoàn thành, hãy giúp tôi kết hợp, phần tách thành các file code phù hợp, sửa lại và hoàn thiện để phù hợp với yêu cầu tôi đã đưa ra ở dưới:
+
+  Về cấu trúc thư mục và các file source tôi đã có bao gồm:                                                  ./client/client.c (mục đích để ghép các module nhỏ như chat, tạo nhóm, gửi file)                                               ./server/server.c (tương tự folder client)                                                                                                           ./include (gồm các file .h) trong đó có db.h nội dung: // db.h
+#ifndef DB_H
+#define DB_H
+
+#include <mysql/mysql.h>
+
+// Cấu trúc để lưu thông tin kết nối MySQL
+typedef struct
+{
+    MYSQL *conn;
+    MYSQL_RES *res;
+    MYSQL_ROW row;
+} DBConnection;
+
+// Hàm để kết nối đến cơ sở dữ liệu
+int connect_db(DBConnection *db, const char *host, const char *user, const char *password, const char *dbname);
+
+// Hàm để thực hiện câu lệnh SQL (INSERT, UPDATE, DELETE)
+MYSQL_RES *execute_query(DBConnection *db, const char *query);
+
+// Hàm để lấy kết quả truy vấn (SELECT)
+int fetch_query_result(DBConnection *db, const char *query);
+
+// Hàm để đóng kết nối với cơ sở dữ liệu
+void close_db(DBConnection *db);
+
+#endif
+./include/gui.h                                                                                                                                                             ./module_chat/client/client.c:  #include <stdio.h>
+#include <stdlib.h>
+#include <fcntl.h>
+#include <string.h>
+#include <stdbool.h>
+#include <sys/ipc.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <pthread.h>
+#include <errno.h>
+#define MESSAGE_BUFFER 500
+#define USERNAME_BUFFER 10
+
+typedef struct {
+    char* prompt;
+    int socket;
+} thread_data;
+
+int min(int num1, int num2) 
+{
+    return (num1 > num2 ) ? num2 : num1;
+}
+
+void progress_bar(int  current, int total, int flag, char * str1, int flag1)
+{
+  // return;
+        if(total <= 0 || current <= 0 ) return;
+        int limit;
+        printf("\r");
+        if(flag == 1)
+        {
+          printf("Sending %s ", str1);
+        }
+        else if(flag == 0)
+        {
+          printf("Receiving %s ", str1);
+        }
+        int difference = 8;
+        printf("[");
+        // printf("%f\n", fraction );
+        long n_small = (current*50)/total;
+        if(flag1 == 0)
+        {
+          limit = 50 - difference;
+        }
+        else
+        {
+          limit = 50;
+        }
+        for(int i=1; i<=limit; i++)
+        {
+            if(i<n_small) { printf("="); }
+            else if(i==n_small) { printf(">"); }
+            else if(i>n_small) { printf(" "); }
+        }
+        printf("]");
+        int percent = (current * 100)/total;
+        int ran;
+        if(percent<100)
+        {
+            percent += 1;
+        }
+        if((flag1 == 1) || ((flag1 == 0) && (flag==1)))
+        {
+          percent = percent;
+        }
+        else
+        {
+          ran = rand()%11;
+          percent = min(percent , (ran+70));
+        }
+        printf("%d%% ", percent);
+}
+
+// Connect to server
+void * connect_to_server(int socket_fd, struct sockaddr_in address) {
+    int response = connect(socket_fd, (struct sockaddr *) &address, sizeof (address));
+    if (response < 0) {
+        fprintf(stderr, "connect() failed: %s\n", strerror(errno));
+        exit(1);
+    } 
+    else {
+      printf("Connected\n");
+    }
+}
+
+// Get message from stdin and send to server
+void * send_message(char prompt[USERNAME_BUFFER+4], int socket_fd, struct sockaddr_in address) {
+  printf(">> ");
+  char message[MESSAGE_BUFFER];
+  char final_message[MESSAGE_BUFFER+USERNAME_BUFFER+1];
+  const char s[2] = " ";
+  char *token1, *token2, *token3;
+  char stri[500], ch[10]; 
+  unsigned char str[81] = {0};
+  int fp, flag = 1;
+  int ret,pos;
+
+  while (fgets(message, MESSAGE_BUFFER, stdin) != NULL) {
+      strcpy(stri, message);
+      memset(final_message,0,strlen(final_message)); // Clear final message buffer
+      strcat(final_message, prompt);
+      strcat(final_message, stri);
+      printf(">> ");
+      if (strncmp(stri, "Exit", 4) == 0) {
+        printf("Closing connection...\n");
+        exit(0);
+      }
+      send(socket_fd, final_message, strlen(final_message)+1, 0);
+      token1 = strtok(message, s);
+      token2 = strtok(NULL, s);
+      token3 = strtok(NULL, s);
+      if(strcmp(token1, "Sending") == 0)
+      {
+        //fflush(stdout);
+        if(strcmp(token3, "TCP\n")== 0)
+        {
+          fp = open(token2, O_RDONLY);
+          if(fp == -1)
+          {
+            printf("file cannot be opened..\n");
+            continue;
+          }
+          //fseek(fp, 0, 2);
+          pos = lseek(fp, 0, SEEK_END);
+          sprintf(ch, "%09d", pos);
+          ret = send(socket_fd, ch, strlen(ch), 0);
+          lseek(fp, 0, SEEK_SET);
+          int count = 0;
+          int l, i, how, flag1 = 1; 
+          how = pos/80;
+          //printf("Sending %s ", token2);
+          for(i = 0; i<how +1; i++)
+          {
+            progress_bar(count, pos, flag, token2, flag1);
+            l = read(fp,str,80);
+            ret = send(socket_fd, str, l, 0);
+            count = count+80;
+          }
+          printf("\nSent file\n");
+          printf(">> ");
+        }
+        if(strcmp(token3, "UDP\n")== 0)
+        {
+          fp = open(token2, O_RDONLY);
+          if(fp == -1)
+          {
+            printf("file cannot be opened..\n");
+            continue;
+          }
+          //fseek(fp, 0, 2);
+          pos = lseek(fp, 0, SEEK_END);
+          sprintf(ch, "%09d", pos);
+          ret = send(socket_fd, ch, strlen(ch), 0);
+          lseek(fp, 0, SEEK_SET);
+          int count = 0;
+          int l, i, how, flag1 = 0; 
+          how = pos/80;
+          //printf("Sending %s ", token2);
+          for(i = 0; i<how +1; i++)
+          {
+            progress_bar(count, pos, flag, token2, flag1);
+            l = read(fp,str,80);
+            ret = send(socket_fd, str, l, 0);
+            count = count+80;
+          }
+          strcpy(str, "complete");
+          ret = send(socket_fd, str, strlen(str), 0);
+          printf("\nSent file\n");
+          printf(">> ");
+        }
+        /*else if(strcmp(token3, "UDP") == 0)
+        {
+
+        }*/
+      }
+      //printf(">> ");
+  }
+}
+
+void * receive(void * threadData) {
+    int socket_fd, response;
+    char message[MESSAGE_BUFFER];
+    thread_data* pData = (thread_data*)threadData;
+    socket_fd = pData->socket;
+    char* prompt = pData->prompt;
+    memset(message, 0, MESSAGE_BUFFER); // Clear message buffer
+    const char s[2] = " ";
+    char *token1, *token2, *token3, *token4;
+    char stri[500], ch[10];
+    unsigned char str[81] = {0};
+    int fp, flag = 0;
+    int ret,pos;
+
+    // Print received message
+    while(true) {
+        response = recvfrom(socket_fd, message, MESSAGE_BUFFER, 0, NULL, NULL);
+        if (response == -1) {
+          fprintf(stderr, "recv() failed: %s\n", strerror(errno));
+          break;
+        } else if (response == 0) {
+              printf("\nPeer disconnected\n");
+              break;
+        } else {
+            printf("\n%s", message);
+            printf(">> ");
+            fflush(stdout); // Make sure "User>" gets printed
+            strcpy(stri, message);
+            token1 = strtok(message, s);
+            token2 = strtok(NULL, s);
+            token3 = strtok(NULL, s);
+            token4 = strtok(NULL, s);
+            if(strcmp(token2, "Sending") == 0)
+            {
+                //printf("sending");
+                //printf("|%s|%s|%s|\n", token1, token2, token3);
+              if(strcmp(token4, "TCP\n")== 0)
+              {
+                fp = open(token3, O_WRONLY | O_CREAT, 0777);
+                if(fp == -1)
+                {
+                  printf("file cannot be opened..\n");
+                  continue;
+                }
+                //printf("TCP");
+                recvfrom(socket_fd, ch, 10, 0, NULL, NULL);
+                pos = atoi(ch);
+                //printf("%d\n", pos);
+                int count = 0;
+                int l, i, how, flag1 = 1;
+                how = pos/80;
+                //printf("Receiving %s ", token3);
+                for(i = 0; i<how +1; i++)
+                {
+                    progress_bar(count, pos, flag, token3, flag1);
+                    l = recvfrom(socket_fd, str, 80, 0, NULL, NULL);
+                    write(fp,str,l);
+                    count = count+80;
+                    //str[l] = 0;
+                }
+                printf("\nReceived file\n");
+                printf(">> ");
+                fflush(stdout);
+              }
+              if(strcmp(token4, "UDP\n")== 0)
+              {
+                fp = open(token3, O_WRONLY | O_CREAT, 0777);
+                if(fp == -1)
+                {
+                  printf("file cannot be opened..\n");
+                  continue;
+                }
+                //printf("TCP");
+                recvfrom(socket_fd, ch, 10, 0, NULL, NULL);
+                pos = atoi(ch);
+                //printf("%d\n", pos);
+                int count = 0;
+                int l, i, how, flag1 = 0;
+                how = pos/80;
+                //printf("Receiving %s ", token3);
+                for(i = 0; i<how +1; i++)
+                {
+                    progress_bar(count, pos, flag, token3, flag1);
+                    l = recvfrom(socket_fd, str, 80, 0, NULL, NULL);
+                    write(fp,str,l);
+                    count = count+80;
+                    //str[l] = 0;
+                }
+                printf("\nReceived file\n");
+                printf(">> ");
+                fflush(stdout);
+              }
+              /*else if(strcmp(token3, "UDP") == 0)
+              {
+
+              }*/
+            }
+            //printf(">> ");
+            //fflush(stdout);
+          }
+    }
+}
+
+int main(int argc, char**argv) {
+    long port = strtol(argv[2], NULL, 10);
+    long port1 = strtol(argv[3], NULL, 10);
+    long port2 = strtol(argv[4], NULL, 10);
+    struct sockaddr_in address, address1, address2;
+    char * server_address;
+    int socket_fd, response, socket_fd1;
+    char prompt[USERNAME_BUFFER+4];
+    char username[USERNAME_BUFFER];
+    pthread_t thread;
+
+    // Check for required arguments
+    if (argc < 3) {
+        printf("Usage: client ip_address port_number\n");
+        exit(1);
+    }
+
+    // Get user handle
+    printf("Enter your user name: ");
+    fgets(username, USERNAME_BUFFER, stdin);
+    username[strlen(username) - 1] = 0; // Remove newline char from end of string
+    strcpy(prompt, username);
+    strcat(prompt, ": ");
+
+    if((socket_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0)
+    {
+        perror("socket failed");
+        exit(EXIT_FAILURE);
+    }
+
+    server_address = argv[1];
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = inet_addr(server_address);
+    address.sin_port = htons(port);
+
+    connect_to_server(socket_fd, address);
+
+    struct timeval timeout;
+    timeout.tv_sec = 2;
+    timeout.tv_usec = 0;
+
+    if((socket_fd1 = socket(AF_INET, SOCK_DGRAM, 0)) < 0)
+    {
+        perror("socket failed");
+        exit(EXIT_FAILURE);
+    }
+
+    setsockopt(socket_fd1, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+
+    address1.sin_family = AF_INET;
+    address1.sin_addr.s_addr = INADDR_ANY;
+    address1.sin_port = htons(port1);
+
+    if(bind(socket_fd1, (struct sockaddr *) &address1, sizeof(address1)) < 0)
+    {
+        perror("bind failed");
+        exit(EXIT_FAILURE);
+    }
+
+    address2.sin_family = AF_INET;
+    address2.sin_addr.s_addr = inet_addr(server_address);
+    address2.sin_port = htons(port2);
+
+    // Create data struct for new thread
+    thread_data data;
+    data.prompt = prompt;
+    data.socket = socket_fd;
+
+    // Create new thread to receive messages
+    pthread_create(&thread, NULL, receive, (void *) &data);
+
+    // Send message
+    send_message(prompt, socket_fd, address);
+
+    // Close socket and kill thread
+    close(socket_fd);
+    pthread_exit(NULL);
+    return 0;
+}                                                                                                                                                                                ./module_chat/server/server.c: #include <stdio.h>
+#include <stdlib.h>
+#include <fcntl.h>
+#include <string.h>
+#include <stdbool.h>
+#include <sys/ipc.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <pthread.h>
+#include <errno.h>
+#define MESSAGE_BUFFER 500
+#define CLIENT_ADDRESS_LENGTH 100
+#define USERNAME_BUFFER 10
+
+typedef struct {
+    char* prompt;
+    int socket;
+} thread_data;
+
+int min(int num1, int num2) 
+{
+    return (num1 > num2 ) ? num2 : num1;
+}
+
+void progress_bar(int  current, int total, int flag, char * str1, int flag1)
+{
+  // return;
+        if(total <= 0 || current <= 0 ) return;
+        int limit;
+        printf("\r");
+        if(flag == 1)
+        {
+          printf("Sending %s ", str1);
+        }
+        else if(flag == 0)
+        {
+          printf("Receiving %s ", str1);
+        }
+        int difference = 8;
+        printf("[");
+        // printf("%f\n", fraction );
+        long n_small = (current*50)/total;
+        if(flag1 == 0)
+        {
+          limit = 50 - difference;
+        }
+        else
+        {
+          limit = 50;
+        }
+        for(int i=1; i<=limit; i++)
+        {
+            if(i<n_small) { printf("="); }
+            else if(i==n_small) { printf(">"); }
+            else if(i>n_small) { printf(" "); }
+        }
+        printf("]");
+        int percent = (current * 100)/total;
+        int ran;
+        if(percent<100)
+        {
+            percent += 1;
+        }
+        if((flag1 == 1) || ((flag1 == 0) && (flag==1)))
+        {
+          percent = percent;
+        }
+        else
+        {
+          ran = rand()%11;
+          percent = min(percent , (ran+70));
+        }
+        printf("%d%% ", percent);
+}
+
+
+// Start server
+void * start_server(int socket_fd, struct sockaddr_in address) {
+    if(bind(socket_fd, (struct sockaddr *) &address, sizeof(address)) < 0)
+    {
+        perror("bind failed");
+        exit(EXIT_FAILURE);
+    }
+    printf("Waiting for connection...\n");
+    if(listen(socket_fd, 10) < 0)
+    {
+        perror("listen failed");
+        exit(EXIT_FAILURE);
+    }
+}
+
+// Get message from stdin and send to client
+void * send_message(char prompt[USERNAME_BUFFER+4], int socket_fd, struct sockaddr_in address) {
+    printf(">> ");
+    char message[MESSAGE_BUFFER];
+    char final_message[MESSAGE_BUFFER+USERNAME_BUFFER+1];
+    const char s[2] = " ";
+    char *token1, *token2, *token3;
+    char stri[500], ch[10]; 
+    unsigned char str[81] = {0};
+    int fp, flag = 1;
+    int ret,pos;
+
+  while (fgets(message, MESSAGE_BUFFER, stdin) != NULL) {
+      strcpy(stri, message);
+      memset(final_message,0,strlen(final_message)); // Clear final message buffer
+      strcat(final_message, prompt);
+      strcat(final_message, stri);
+      printf(">> ");
+      if (strncmp(stri, "Exit", 4) == 0) {
+        printf("Closing connection...\n");
+        exit(0);
+      }
+      send(socket_fd, final_message, strlen(final_message)+1, 0);
+      token1 = strtok(message, s);
+      token2 = strtok(NULL, s);
+      token3 = strtok(NULL, s);
+      if(strcmp(token1, "Sending") == 0)
+      {
+        //fflush(stdout);
+        if(strcmp(token3, "TCP\n")== 0)
+        {
+          fp = open(token2, O_RDONLY);
+          if(fp == -1)
+          {
+            printf("file cannot be opened..\n");
+            continue;
+          }
+          //fseek(fp, 0, 2);
+          pos = lseek(fp, 0, SEEK_END);
+          sprintf(ch, "%09d", pos);
+          ret = send(socket_fd, ch, strlen(ch), 0);
+          lseek(fp, 0, SEEK_SET);
+          int count = 0, flag1 = 1;
+          int l, i, how; 
+          how = pos/80;
+          //printf("Sending %s ", token2);
+          for(i = 0; i<how +1; i++)
+          {
+            progress_bar(count, pos, flag, token2, flag1);
+            l = read(fp,str,80);
+            ret = send(socket_fd, str, l, 0);
+            count = count+80;
+          }
+          printf("\nSent file\n");
+          printf(">> ");
+        }
+        if(strcmp(token3, "UDP\n")== 0)
+        {
+          fp = open(token2, O_RDONLY);
+          if(fp == -1)
+          {
+            printf("file cannot be opened..\n");
+            continue;
+          }
+          //fseek(fp, 0, 2);
+          pos = lseek(fp, 0, SEEK_END);
+          sprintf(ch, "%09d", pos);
+          ret = send(socket_fd, ch, strlen(ch), 0);
+          lseek(fp, 0, SEEK_SET);
+          int count = 0, flag1 = 0;
+          int l, i, how; 
+          how = pos/80;
+          //printf("Sending %s ", token2);
+          for(i = 0; i<how +1; i++)
+          {
+            progress_bar(count, pos, flag, token2, flag1);
+            l = read(fp,str,80);
+            ret = send(socket_fd, str, l, 0);
+            count = count+80;
+          }
+          printf("\nSent file\n");
+          printf(">> ");
+        }
+        /*else if(strcmp(token3, "UDP") == 0)
+        {
+
+        }*/
+      }
+      //printf(">> ");
+  }
+}
+
+void * receive(void * threadData) {
+    int socket_fd, response;
+    char message[MESSAGE_BUFFER];
+    thread_data* pData = (thread_data*)threadData;
+    socket_fd = pData->socket;
+    char* prompt = pData->prompt;
+    memset(message, 0, MESSAGE_BUFFER); // Clear message buffer
+    const char s[2] = " ";
+    char *token1, *token2, *token3, *token4;
+    char stri[500], ch[10];
+    unsigned char str[81] = {0};
+    int fp, flag = 0;
+    int ret,pos;
+
+    // Print received message
+    while(true) {
+        response = recvfrom(socket_fd, message, MESSAGE_BUFFER, 0, NULL, NULL);
+        if (response == -1) {
+          fprintf(stderr, "recv() failed: %s\n", strerror(errno));
+          break;
+        } else if (response == 0) {
+              printf("\nPeer disconnected\n");
+              break;
+        } else {
+            printf("\n%s", message);  
+            printf(">> ");
+            fflush(stdout); // Make sure "User>" gets printed
+            //fflush(stdout); // Make sure "User>" gets printed
+            strcpy(stri, message);
+            token1 = strtok(message, s);
+            token2 = strtok(NULL, s);
+            token3 = strtok(NULL, s);
+            token4 = strtok(NULL, s);
+            if(strcmp(token2, "Sending") == 0)
+            {
+                //printf("sending");
+                //printf("|%s|%s|%s|\n", token1, token2, token3);
+              if(strcmp(token4, "TCP\n")== 0)
+              {
+                fp = open(token3, O_WRONLY | O_CREAT, 0777);
+                if(fp == -1)
+                {
+                  printf("file cannot be opened..\n");
+                  continue;
+                }
+                //printf("TCP");
+                recvfrom(socket_fd, ch, 10, 0, NULL, NULL);
+                pos = atoi(ch);
+                //printf("%d\n", pos);
+                int count = 0;
+                int l, i, how, flag1 = 1;
+                how = pos/80;
+                //printf("Receiving %s ", token3);
+                for(i = 0; i<how +1; i++)
+                {
+                    progress_bar(count, pos, flag, token3, flag1);
+                    l = recvfrom(socket_fd, str, 80, 0, NULL, NULL);
+                    write(fp,str,l);
+                    count = count+80;
+                    //str[l] = 0;
+                }
+                printf("\nReceived file\n");
+                printf(">> ");
+                fflush(stdout);
+              }
+              if(strcmp(token4, "UDP\n")== 0)
+              {
+                fp = open(token3, O_WRONLY | O_CREAT, 0777);
+                if(fp == -1)
+                {
+                  printf("file cannot be opened..\n");
+                  continue;
+                }
+                //printf("TCP");
+                recvfrom(socket_fd, ch, 10, 0, NULL, NULL);
+                pos = atoi(ch);
+                //printf("%d\n", pos);
+                int count = 0;
+                int l, i, how, flag1 = 0;
+                how = pos/80;
+                //printf("Receiving %s ", token3);
+                for(i = 0; i<how +1; i++)
+                {
+                    progress_bar(count, pos, flag, token3, flag1);
+                    l = recvfrom(socket_fd, str, 80, 0, NULL, NULL);
+                    write(fp,str,l);
+                    count = count+80;
+                    //str[l] = 0;
+                }
+                printf("\nReceived file\n");
+                printf(">> ");
+                fflush(stdout);
+              }
+              /*else if(strcmp(token3, "UDP") == 0)
+              {
+
+              }*/
+            }
+            //printf(">> ");
+            //fflush(stdout);
+          }
+    }
+}
+
+int main(int argc, char**argv) {
+    long port = strtol(argv[1], NULL, 10);
+    long port1 = strtol(argv[2], NULL, 10);
+    long port2 = strtol(argv[3], NULL, 10);
+    struct sockaddr_in address, cl_addr, address1, address2;;
+    int socket_fd, length, response, new_socket_fd, socket_fd1;
+    char client_address[CLIENT_ADDRESS_LENGTH];
+    char prompt[USERNAME_BUFFER+4];
+    char username[USERNAME_BUFFER];
+    int opt = 1;
+    pthread_t thread;
+
+    if (argc < 2) {
+        printf("Usage: ./server tcp_port_number udp_port_number\n");
+        exit(1);
+    }
+    //printf("TCP RUNNING ON PORT : %s\n" , argv[1]);
+    //printf("UDP RUNNING ON PORT : %s\n", argv[2]);
+    printf("Enter your user name: ");
+    fgets(username, USERNAME_BUFFER, stdin);
+    username[strlen(username) - 1] = 0; // Remove newline char from end of string
+    strcpy(prompt, username);
+    strcat(prompt, ": ");
+
+    if((socket_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0)
+    {
+        perror("socket failed");
+        exit(EXIT_FAILURE);
+    }
+
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = INADDR_ANY;
+    address.sin_port = htons(port);
+
+    struct timeval timeout;
+    timeout.tv_sec = 2;
+    timeout.tv_usec = 0;
+
+    if((socket_fd1 = socket(AF_INET, SOCK_DGRAM, 0)) < 0)
+    {
+        perror("socket failed");
+        exit(EXIT_FAILURE);
+    }
+
+    setsockopt(socket_fd1, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+
+    address1.sin_family = AF_INET;
+    address1.sin_addr.s_addr = INADDR_ANY;
+    address1.sin_port = htons(port1);
+
+    if(bind(socket_fd1, (struct sockaddr *) &address1, sizeof(address1)) < 0)
+    {
+        perror("bind failed");
+        exit(EXIT_FAILURE);
+    }
+
+    start_server(socket_fd, address);
+
+    // Accept connection
+    length = sizeof(cl_addr);
+    new_socket_fd = accept(socket_fd, (struct sockaddr *) &cl_addr, (socklen_t*) &length);
+    if (new_socket_fd < 0) {
+        printf("accept failed\n");
+        exit(1);
+    }
+
+    address2.sin_family = AF_INET;
+    address2.sin_addr.s_addr = cl_addr.sin_addr.s_addr;
+    address2.sin_port = htons(port2);
+
+    inet_ntop(AF_INET, &(cl_addr.sin_addr), client_address, CLIENT_ADDRESS_LENGTH);
+    printf("Connected: %s\n", client_address);
+
+    // Create data struct for new thread
+    thread_data data;
+    data.prompt = prompt;
+    data.socket = new_socket_fd;
+
+    // Create new thread to receive messages
+    pthread_create(&thread, NULL, receive, (void *) &data);
+
+    // Send message
+    send_message(prompt, new_socket_fd, cl_addr);
+
+    // Close sockets and kill thread
+    close(new_socket_fd);
+    close(socket_fd);
+    pthread_exit(NULL);
+    return 0;
+}
+                                                                                                                                      ./module_file/client/client.c: #include "common.h"
+#include <errno.h>
+
+void register_user(int sock);
+int login_user(int sock);
+void list_files(int sock);
+void create_directory(int sock);
+void change_directory(int sock);
+void upload_file(int sock);
+void download_file(int sock);
+void search_files(int sock);
+void upload_directory(int sock, const char *dir_path);
+void download_directory(int sock, const char *dir_name);
+void send_command(int sock, const char *command);
+int create_directories(const char *path);
+
+int main() {
+    int sock;
+    struct sockaddr_in server_addr;
+
+    // Tạo socket
+    sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0)
+        handle_error("Không thể tạo socket.");
+
+    // Thiết lập địa chỉ máy chủ
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(PORT);
+    server_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+
+    // Kết nối tới máy chủ
+    if (connect(sock, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0)
+        handle_error("Kết nối tới máy chủ thất bại.");
+
+    printf("Đã kết nối tới máy chủ.\n");
+
+    int choice;
+    int authenticated = 0;
+
+    while (1) {
+        if (!authenticated) {
+            printf("\n1. Đăng ký\n2. Đăng nhập\nLựa chọn: ");
+            scanf("%d", &choice);
+            getchar(); // Xóa ký tự newline
+
+            if (choice == 1) {
+                register_user(sock);
+            } else if (choice == 2) {
+                authenticated = login_user(sock);
+            } else {
+                printf("Lựa chọn không hợp lệ.\n");
+            }
+        } else {
+            printf("\n1. Xem danh sách file\n2. Tạo thư mục\n3. Thay đổi thư mục\n4. Tải lên file\n5. Tải xuống file\n6. Tìm kiếm file\n7. Tải lên thư mục\n8. Tải xuống thư mục\n9. Đăng xuất\nLựa chọn: ");
+            scanf("%d", &choice);
+            getchar(); // Xóa ký tự newline
+
+            switch (choice) {
+                case 1:
+                    list_files(sock);
+                    break;
+                case 2:
+                    create_directory(sock);
+                    break;
+                case 3:
+                    change_directory(sock);
+                    break;
+                case 4:
+                    upload_file(sock);
+                    break;
+                case 5:
+                    download_file(sock);
+                    break;
+                case 6:
+                    search_files(sock);
+                    break;
+                case 7:
+                    {
+                        char dir_name[BUFFER_SIZE];
+                        printf("Nhập tên thư mục cần tải lên: ");
+                        scanf("%s", dir_name);
+                        upload_directory(sock, dir_name);
+                        break;
+                    }
+                case 8:
+                    {
+                        char dir_name[BUFFER_SIZE];
+                        printf("Nhập tên thư mục cần tải xuống: ");
+                        scanf("%s", dir_name);
+                        download_directory(sock, dir_name);
+                        break;
+                    }
+                case 9:
+                    authenticated = 0;
+                    break;
+                default:
+                    printf("Lựa chọn không hợp lệ.\n");
+            }
+        }
+    }
+    close(sock);
+    return 0;
+}
+
+int create_directories(const char *path) {
+    char tmp[BUFFER_SIZE];
+    char *p = NULL;
+    size_t len;
+
+    snprintf(tmp, sizeof(tmp), "%s", path);
+    len = strlen(tmp);
+    if (tmp[len - 1] == '/')
+        tmp[len - 1] = '\0';
+
+    for (p = tmp + 1; *p; p++) {
+        if (*p == '/') {
+            *p = '\0';
+            if (mkdir(tmp, 0777) != 0 && errno != EEXIST) {
+                return -1;
+            }
+            *p = '/';
+        }
+    }
+    if (mkdir(tmp, 0777) != 0 && errno != EEXIST) {
+        return -1;
+    }
+    return 0;
+}
+
+// Hàm tải lên thư mục
+void upload_directory(int sock, const char *dir_path) {
+
+    DIR *d = opendir(dir_path);
+    if (!d) {
+        printf("Không thể mở thư mục %s\n", dir_path);
+        return;
+    }
+
+    struct dirent *dir;
+    while ((dir = readdir(d)) != NULL) {
+        char path[BUFFER_SIZE];
+        if (strcmp(dir->d_name, ".") == 0 || strcmp(dir->d_name, "..") == 0)
+            continue;
+        snprintf(path, BUFFER_SIZE, "%s/%s", dir_path, dir->d_name);
+
+        struct stat st;
+        stat(path, &st);
+        if (S_ISDIR(st.st_mode)) {
+            // Gửi lệnh tạo thư mục
+            send_command(sock, "MKDIR");
+            send(sock, path, BUFFER_SIZE, 0);
+            // Nhận phản hồi từ máy chủ
+            char response[BUFFER_SIZE];
+            recv(sock, response, BUFFER_SIZE, 0);
+            if (strcmp(response, "DirectoryCreated") == 0) {
+                printf("Đã tạo thư mục %s trên máy chủ.\n", path);
+            } else {
+                printf("Không thể tạo thư mục %s trên máy chủ.\n", path);
+            }
+            // Đệ quy tải lên thư mục con
+            upload_directory(sock, path);
+        } else if (S_ISREG(st.st_mode)) {
+            // Tải lên file
+            send_command(sock, "UPLOAD");
+            send(sock, path, BUFFER_SIZE, 0);
+
+            FILE *fp = fopen(path, "rb");
+            if (!fp) {
+                printf("Không thể mở file %s\n", path);
+                continue;
+            }
+
+            // Lấy kích thước file
+            fseek(fp, 0, SEEK_END);
+            uint64_t filesize = ftell(fp);
+            fseek(fp, 0, SEEK_SET);
+
+            // Chuyển đổi kích thước file sang network byte order
+            uint64_t filesize_net = htonll(filesize);
+
+            // Gửi kích thước file
+            send_all(sock, &filesize_net, sizeof(filesize_net));
+
+            // Gửi nội dung file
+            char buffer[BUFFER_SIZE];
+            size_t bytesRead;
+            while ((bytesRead = fread(buffer, 1, BUFFER_SIZE, fp)) > 0) {
+                if (send_all(sock, buffer, bytesRead) != 0) {
+                    printf("Lỗi khi gửi dữ liệu.\n");
+                    fclose(fp);
+                    return;
+                }
+            }
+            fclose(fp);
+
+            // Nhận phản hồi từ máy chủ
+            char response[BUFFER_SIZE];
+            recv(sock, response, BUFFER_SIZE, 0);
+            if (strcmp(response, "UploadSuccess") == 0) {
+                printf("Đã tải lên file %s.\n", path);
+            } else {
+                printf("Tải lên file %s thất bại.\n", path);
+            }
+        }
+    }
+    closedir(d);
+    // Gửi lệnh kết thúc thư mục
+    send_command(sock, "END_OF_DIR");
+
+    // Nhận phản hồi từ máy chủ
+    char response[BUFFER_SIZE];
+    recv(sock, response, BUFFER_SIZE, 0);
+    if (strcmp(response, "UploadDirectorySuccess") == 0) {
+        printf("Đã tải lên thư mục %s thành công.\n", dir_path);
+    } else {
+        printf("Tải lên thư mục %s thất bại.\n", dir_path);
+    }
+}
+
+// Hàm tải xuống thư mục
+void download_directory(int sock, const char *dir_name) {
+    // Gửi lệnh tải xuống thư mục
+    send_command(sock, "DOWNLOAD_DIR");
+    send(sock, dir_name, BUFFER_SIZE, 0);
+
+    char response[BUFFER_SIZE];
+    recv(sock, response, BUFFER_SIZE, 0);
+
+    if (strcmp(response, "DirectoryNotFound") == 0) {
+        printf("Thư mục không tồn tại trên máy chủ.\n");
+        return;
+    }
+
+    while (1) {
+        memset(response, 0, BUFFER_SIZE);
+        if (recv(sock, response, BUFFER_SIZE, 0) <= 0) {
+            printf("Lỗi khi nhận dữ liệu từ máy chủ.\n");
+            break;
+        }
+
+        if (strcmp(response, "END_OF_DIR") == 0) {
+            printf("Hoàn tất tải xuống thư mục %s.\n", dir_name);
+            break;
+        } else if (strcmp(response, "MKDIR") == 0) {
+            // Tạo thư mục
+            char dirname[BUFFER_SIZE];
+            recv(sock, dirname, BUFFER_SIZE, 0);
+            if (create_directories(dirname) == 0) {
+                printf("Đã tạo thư mục %s.\n", dirname);
+            } else {
+                printf("Không thể tạo thư mục %s.\n", dirname);
+            }
+        } else if (strcmp(response, "FILE") == 0) {
+            // Nhận file
+            char filename[BUFFER_SIZE];
+            recv(sock, filename, BUFFER_SIZE, 0);
+
+            // Nhận kích thước file
+            uint64_t filesize_net;
+            if (recv_all(sock, &filesize_net, sizeof(filesize_net)) <= 0) {
+                printf("Lỗi khi nhận kích thước file.\n");
+                continue;
+            }
+            uint64_t filesize = ntohll(filesize_net);
+
+            // Tạo các thư mục cha nếu chưa tồn tại
+            char file_dir[BUFFER_SIZE];
+            strcpy(file_dir, filename);
+            char *last_slash = strrchr(file_dir, '/');
+            if (last_slash != NULL) {
+                *last_slash = '\0';
+                if (create_directories(file_dir) != 0) {
+                    printf("Không thể tạo thư mục %s.\n", file_dir);
+                    continue;
+                }
+            }
+
+            FILE *fp = fopen(filename, "wb");
+            if (!fp) {
+                printf("Không thể tạo file %s\n", filename);
+                continue;
+            }
+
+            // Nhận nội dung file
+            char buffer[BUFFER_SIZE];
+            uint64_t totalReceived = 0;
+            while (totalReceived < filesize) {
+                size_t bytesToReceive = (filesize - totalReceived) < BUFFER_SIZE ? (filesize - totalReceived) : BUFFER_SIZE;
+                ssize_t bytesReceived = recv_all(sock, buffer, bytesToReceive);
+                if (bytesReceived <= 0) {
+                    printf("Lỗi khi nhận dữ liệu.\n");
+                    fclose(fp);
+                    break;
+                }
+                fwrite(buffer, 1, bytesReceived, fp);
+                totalReceived += bytesReceived;
+            }
+            fclose(fp);
+            printf("Đã tải xuống file %s.\n", filename);
+        } else {
+            printf("Nhận thông báo không xác định: %s\n", response);
+        }
+    }
+}
+
+void send_command(int sock, const char *command) {
+    send(sock, command, BUFFER_SIZE, 0);
+}
+
+// Hàm đăng ký người dùng
+void register_user(int sock) {
+    char username[BUFFER_SIZE], password[BUFFER_SIZE];
+    printf("Nhập tên người dùng: ");
+    scanf("%s", username);
+    printf("Nhập mật khẩu: ");
+    scanf("%s", password);
+
+    send_command(sock, "Register");
+    send(sock, username, BUFFER_SIZE, 0);
+    send(sock, password, BUFFER_SIZE, 0);
+
+    char response[BUFFER_SIZE];
+    recv(sock, response, BUFFER_SIZE, 0);
+    if (strcmp(response, "RegisterSuccess") == 0) {
+        printf("Đăng ký thành công!\n");
+    } else if (strcmp(response, "UserExists") == 0) {
+        printf("Người dùng đã tồn tại.\n");
+    } else {
+        printf("Đăng ký thất bại.\n");
+    }
+}
+
+// Hàm đăng nhập người dùng
+int login_user(int sock) {
+    char username[BUFFER_SIZE], password[BUFFER_SIZE];
+    printf("Nhập tên người dùng: ");
+    scanf("%s", username);
+    printf("Nhập mật khẩu: ");
+    scanf("%s", password);
+
+    send_command(sock, "Login");
+    send(sock, username, BUFFER_SIZE, 0);
+    send(sock, password, BUFFER_SIZE, 0);
+
+    char response[BUFFER_SIZE];
+    recv(sock, response, BUFFER_SIZE, 0);
+    if (strcmp(response, "LoginSuccess") == 0) {
+        printf("Đăng nhập thành công!\n");
+        return 1;
+    } else {
+        printf("Đăng nhập thất bại. Kiểm tra lại thông tin đăng nhập.\n");
+        return 0;
+    }
+}
+
+// Hàm xem danh sách file
+void list_files(int sock) {
+    send_command(sock, "LIST");
+    char buffer[BUFFER_SIZE];
+    recv(sock, buffer, BUFFER_SIZE, 0);
+    printf("Danh sách file và thư mục:\n%s", buffer);
+}
+
+// Hàm tạo thư mục
+void create_directory(int sock) {
+    char dirname[BUFFER_SIZE];
+    printf("Nhập tên thư mục cần tạo: ");
+    scanf("%s", dirname);
+
+    send_command(sock, "MKDIR");
+    send(sock, dirname, BUFFER_SIZE, 0);
+
+    char response[BUFFER_SIZE];
+    recv(sock, response, BUFFER_SIZE, 0);
+    if (strcmp(response, "DirectoryCreated") == 0) {
+        printf("Tạo thư mục thành công.\n");
+    } else {
+        printf("Tạo thư mục thất bại.\n");
+    }
+}
+
+// Hàm thay đổi thư mục
+void change_directory(int sock) {
+    char dirname[BUFFER_SIZE];
+    printf("Nhập tên thư mục cần chuyển đến: ");
+    scanf("%s", dirname);
+
+    send_command(sock, "CD");
+    send(sock, dirname, BUFFER_SIZE, 0);
+
+    char response[BUFFER_SIZE];
+    recv(sock, response, BUFFER_SIZE, 0);
+    if (strcmp(response, "DirectoryChanged") == 0) {
+        printf("Chuyển thư mục thành công.\n");
+    } else {
+        printf("Chuyển thư mục thất bại.\n");
+    }
+}
+
+void upload_file(int sock) {
+    char filename[BUFFER_SIZE];
+    printf("Nhập tên file cần tải lên: ");
+    scanf("%s", filename);
+
+    FILE *fp = fopen(filename, "rb");
+    if (!fp) {
+        printf("Không thể mở file.\n");
+        return;
+    }
+
+    // Lấy kích thước file
+    fseek(fp, 0, SEEK_END);
+    uint64_t filesize = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+
+    send_command(sock, "UPLOAD");
+    send(sock, filename, BUFFER_SIZE, 0);
+
+    // Chuyển đổi kích thước file sang network byte order
+    uint64_t filesize_net = htonll(filesize);
+
+    // Gửi kích thước file
+    send_all(sock, &filesize_net, sizeof(filesize_net));
+
+    // Gửi nội dung file
+    char buffer[BUFFER_SIZE];
+    size_t bytesRead;
+    while ((bytesRead = fread(buffer, 1, BUFFER_SIZE, fp)) > 0) {
+        if (send_all(sock, buffer, bytesRead) != 0) {
+            printf("Lỗi khi gửi dữ liệu.\n");
+            fclose(fp);
+            return;
+        }
+    }
+    fclose(fp);
+    printf("Đã tải lên file %s.\n", filename);
+
+    char response[BUFFER_SIZE];
+    recv(sock, response, BUFFER_SIZE, 0);
+    if (strcmp(response, "UploadSuccess") == 0) {
+        printf("Tải lên thành công.\n");
+    } else {
+        printf("Tải lên thất bại.\n");
+    }
+}
+
+// Hàm tải xuống file
+void download_file(int sock) {
+    char filename[BUFFER_SIZE];
+    printf("Nhập tên file cần tải xuống: ");
+    scanf("%s", filename);
+
+    send_command(sock, "DOWNLOAD");
+    send(sock, filename, BUFFER_SIZE, 0);
+
+    char response[BUFFER_SIZE];
+    recv(sock, response, BUFFER_SIZE, 0);
+    if (strcmp(response, "FileNotFound") == 0) {
+        printf("File không tồn tại trên máy chủ.\n");
+        return;
+    }
+
+    // Nhận kích thước file
+    uint64_t filesize_net;
+    if (recv_all(sock, &filesize_net, sizeof(filesize_net)) <= 0) {
+        printf("Lỗi khi nhận kích thước file.\n");
+        return;
+    }
+    uint64_t filesize = ntohll(filesize_net);
+
+    // Tạo các thư mục cha nếu cần thiết
+    char file_dir[BUFFER_SIZE];
+    strcpy(file_dir, filename);
+    char *last_slash = strrchr(file_dir, '/');
+    if (last_slash != NULL) {
+        *last_slash = '\0';
+        if (create_directories(file_dir) != 0) {
+            printf("Không thể tạo thư mục %s.\n", file_dir);
+            return;
+        }
+    }
+
+    FILE *fp = fopen(filename, "wb");
+    if (!fp) {
+        printf("Không thể tạo file.\n");
+        return;
+    }
+
+    // Nhận nội dung file
+    char buffer[BUFFER_SIZE];
+    uint64_t totalReceived = 0;
+    while (totalReceived < filesize) {
+        size_t bytesToReceive = (filesize - totalReceived) < BUFFER_SIZE ? (filesize - totalReceived) : BUFFER_SIZE;
+        ssize_t bytesReceived = recv_all(sock, buffer, bytesToReceive);
+        if (bytesReceived <= 0) {
+            printf("Lỗi khi nhận dữ liệu.\n");
+            fclose(fp);
+            return;
+        }
+        fwrite(buffer, 1, bytesReceived, fp);
+        totalReceived += bytesReceived;
+    }
+    fclose(fp);
+    printf("Đã tải xuống file %s.\n", filename);
+}
+
+// Hàm tìm kiếm file
+void search_files(int sock) {
+    char query[BUFFER_SIZE];
+    printf("Nhập từ khóa tìm kiếm: ");
+    scanf("%s", query);
+
+    send_command(sock, "SEARCH");
+    send(sock, query, BUFFER_SIZE, 0);
+
+    char results[BUFFER_SIZE];
+    recv(sock, results, BUFFER_SIZE, 0);
+    printf("Kết quả tìm kiếm:\n%s", results);
+
+    printf("Nhập đường dẫn file chính xác để tải xuống hoặc 'exit' để hủy: ");
+    char choice[BUFFER_SIZE];
+    scanf("%s", choice);
+
+    if (strcmp(choice, "exit") != 0) {
+        send_command(sock, "DOWNLOAD");
+        send(sock, choice, BUFFER_SIZE, 0);
+
+        char response[BUFFER_SIZE];
+        recv(sock, response, BUFFER_SIZE, 0);
+        if (strcmp(response, "FileNotFound") == 0) {
+            printf("File không tồn tại trên máy chủ.\n");
+            return;
+        }
+
+        // Nhận kích thước file
+        uint64_t filesize_net;
+        if (recv_all(sock, &filesize_net, sizeof(filesize_net)) <= 0) {
+            printf("Lỗi khi nhận kích thước file.\n");
+            return;
+        }
+        uint64_t filesize = ntohll(filesize_net);
+
+        // Tạo các thư mục cha nếu cần thiết
+        char file_dir[BUFFER_SIZE];
+        strcpy(file_dir, choice);
+        char *last_slash = strrchr(file_dir, '/');
+        if (last_slash != NULL) {
+            *last_slash = '\0';
+            if (create_directories(file_dir) != 0) {
+                printf("Không thể tạo thư mục %s.\n", file_dir);
+                return;
+            }
+        }
+
+        FILE *fp = fopen(choice, "wb");
+        if (!fp) {
+            printf("Không thể tạo file.\n");
+            return;
+        }
+
+        // Nhận nội dung file
+        char buffer[BUFFER_SIZE];
+        uint64_t totalReceived = 0;
+        while (totalReceived < filesize) {
+            size_t bytesToReceive = (filesize - totalReceived) < BUFFER_SIZE ? (filesize - totalReceived) : BUFFER_SIZE;
+            ssize_t bytesReceived = recv_all(sock, buffer, bytesToReceive);
+            if (bytesReceived <= 0) {
+                printf("Lỗi khi nhận dữ liệu.\n");
+                fclose(fp);
+                return;
+            }
+            fwrite(buffer, 1, bytesReceived, fp);
+            totalReceived += bytesReceived;
+        }
+        fclose(fp);
+        printf("Đã tải xuống file %s.\n", choice);
+    }
+}
+./module_file/client/common.h:#ifndef COMMON_H
+#define COMMON_H
+
+#include <arpa/inet.h>
+#include <dirent.h>
+#include <errno.h>
+#include <netinet/in.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
+
+#define BUFFER_SIZE 1024
+#define PORT 8085
+
+void handle_error(const char *message);
+int send_all(int sock, const void *buffer, size_t length);
+int recv_all(int sock, void *buffer, size_t length);
+uint64_t htonll(uint64_t value);
+uint64_t ntohll(uint64_t value);
+
+#endif // COMMON_H
+./module_file/client/function.c: #include "common.h"
+
+void handle_error(const char *message) {
+    perror(message);
+    exit(EXIT_FAILURE);
+}
+
+int send_all(int sock, const void *buffer, size_t length) {
+    size_t totalSent = 0;
+    const char *ptr = buffer;
+    while (totalSent < length) {
+        ssize_t bytesSent = send(sock, ptr + totalSent, length - totalSent, 0);
+        if (bytesSent <= 0) {
+            return -1; // Lỗi khi gửi
+        }
+        totalSent += bytesSent;
+    }
+    return 0; // Gửi thành công
+}
+
+int recv_all(int sock, void *buffer, size_t length) {
+    size_t totalReceived = 0;
+    char *ptr = buffer;
+    while (totalReceived < length) {
+        ssize_t bytesReceived = recv(sock, ptr + totalReceived, length - totalReceived, 0);
+        if (bytesReceived <= 0) {
+            return -1; // Lỗi hoặc kết nối đóng
+        }
+        totalReceived += bytesReceived;
+    }
+    return totalReceived;
+}
+
+uint64_t htonll(uint64_t value) {
+    int num = 1;
+    if (*(char *)&num == 1) {
+        // Little endian
+        uint32_t high_part = htonl((uint32_t)(value >> 32));
+        uint32_t low_part = htonl((uint32_t)(value & 0xFFFFFFFFLL));
+        return (((uint64_t)high_part) << 32) | low_part;
+    } else {
+        // Big endian
+        return value;
+    }
+}
+
+uint64_t ntohll(uint64_t value) {
+    int num = 1;
+    if (*(char *)&num == 1) {
+        // Little endian
+        uint32_t high_part = ntohl((uint32_t)(value >> 32));
+        uint32_t low_part = ntohl((uint32_t)(value & 0xFFFFFFFFLL));
+        return (((uint64_t)high_part) << 32) | low_part;
+    } else {
+        // Big endian
+        return value;
+    }
+}
+./module_file/server/common.h: 
+#ifndef COMMON_H
+#define COMMON_H
+
+#include <arpa/inet.h>
+#include <dirent.h>
+#include <errno.h>
+#include <netinet/in.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
+
+#define BUFFER_SIZE 1024
+#define PORT 8085
+
+void handle_error(const char *message);
+int send_all(int sock, const void *buffer, size_t length);
+int recv_all(int sock, void *buffer, size_t length);
+uint64_t htonll(uint64_t value);
+uint64_t ntohll(uint64_t value);
+
+#endif // COMMON_H
+./module_file/server/function.c:
+#ifndef COMMON_H
+#define COMMON_H
+
+#include <arpa/inet.h>
+#include <dirent.h>
+#include <errno.h>
+#include <netinet/in.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
+
+#define BUFFER_SIZE 1024
+#define PORT 8085
+
+void handle_error(const char *message);
+int send_all(int sock, const void *buffer, size_t length);
+int recv_all(int sock, void *buffer, size_t length);
+uint64_t htonll(uint64_t value);
+uint64_t ntohll(uint64_t value);
+
+#endif // COMMON_H
+
+./module_file/server/server.c:
+#include "common.h"
+#include <errno.h>
+
+void register_user(int client_sock);
+int login_user(int client_sock);
+void list_files(int client_sock);
+void create_directory(int client_sock);
+void change_directory(int client_sock);
+void receive_file(int client_sock);
+void send_file(int client_sock);
+void search_files(int client_sock);
+void search_in_directory(const char *dir_path, const char *query, char *results);
+void send_directory(int client_sock, const char *dir_path, int is_top_level);
+void receive_directory(int client_sock);
+void handle_client(int client_sock);
+void send_response(int client_sock, const char *message);
+int create_directories(const char *path);
+
+int main() {
+    int server_sock, client_sock;
+    struct sockaddr_in server_addr, client_addr;
+    socklen_t addr_size;
+
+    // Tạo socket
+    server_sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_sock == -1)
+        handle_error("Không thể tạo socket.");
+
+    // Thiết lập địa chỉ máy chủ
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(PORT);
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+
+    // Gắn socket với địa chỉ máy chủ
+    if (bind(server_sock, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0)
+        handle_error("Gắn socket thất bại.");
+
+    // Lắng nghe kết nối
+    if (listen(server_sock, 5) < 0)
+        handle_error("Lắng nghe thất bại.");
+
+    printf("Máy chủ đang lắng nghe trên cổng %d...\n", PORT);
+
+    while (1) {
+        addr_size = sizeof(client_addr);
+        client_sock = accept(server_sock, (struct sockaddr*)&client_addr, &addr_size);
+        if (client_sock < 0)
+            handle_error("Chấp nhận kết nối thất bại.");
+        printf("Kết nối từ máy khách.\n");
+
+        // Xử lý máy khách trong một tiến trình riêng
+        if (fork() == 0) {
+            close(server_sock);
+            handle_client(client_sock);
+            exit(0);
+        }
+        close(client_sock);
+    }
+    close(server_sock);
+    return 0;
+}
+
+int create_directories(const char *path) {
+    char tmp[BUFFER_SIZE];
+    char *p = NULL;
+    size_t len;
+
+    snprintf(tmp, sizeof(tmp), "%s", path);
+    len = strlen(tmp);
+    if (tmp[len - 1] == '/')
+        tmp[len - 1] = '\0';
+
+    for (p = tmp + 1; *p; p++) {
+        if (*p == '/') {
+            *p = '\0';
+            if (mkdir(tmp, 0777) != 0 && errno != EEXIST) {
+                return -1;
+            }
+            *p = '/';
+        }
+    }
+    if (mkdir(tmp, 0777) != 0 && errno != EEXIST) {
+        return -1;
+    }
+    return 0;
+}
+
+void handle_client(int client_sock) {
+    int authenticated = 0;
+    char command[BUFFER_SIZE];
+
+    while (1) {
+        memset(command, 0, BUFFER_SIZE);
+        if (recv(client_sock, command, BUFFER_SIZE, 0) <= 0)
+            break;
+
+        if (strcmp(command, "Register") == 0) {
+            register_user(client_sock);
+        } else if (strcmp(command, "Login") == 0) {
+            authenticated = login_user(client_sock);
+        } else if (authenticated) {
+            if (strcmp(command, "LIST") == 0) {
+                list_files(client_sock);
+            } else if (strcmp(command, "MKDIR") == 0) {
+                create_directory(client_sock);
+            } else if (strcmp(command, "CD") == 0) {
+                change_directory(client_sock);
+            } else if (strcmp(command, "UPLOAD") == 0) {
+                receive_file(client_sock);
+            } else if (strcmp(command, "DOWNLOAD") == 0) {
+                send_file(client_sock);
+            } else if (strcmp(command, "SEARCH") == 0) {
+                search_files(client_sock);
+            } else if (strcmp(command, "DOWNLOAD_DIR") == 0) {
+                char dir_name[BUFFER_SIZE];
+                recv(client_sock, dir_name, BUFFER_SIZE, 0);
+
+                // Kiểm tra sự tồn tại của thư mục
+                if (access(dir_name, F_OK) == -1) {
+                    send_response(client_sock, "DirectoryNotFound");
+                } else {
+                    // Bắt đầu gửi thư mục
+                    send_directory(client_sock, dir_name, 1);
+                }
+            } else if (strcmp(command, "UPLOAD_DIR") == 0) {
+                receive_directory(client_sock);
+            } else {
+                send_response(client_sock, "Lệnh không hợp lệ.");
+            }
+        } else {
+            send_response(client_sock, "Vui lòng đăng nhập trước.");
+        }
+    }
+    close(client_sock);
+    printf("Đã ngắt kết nối với máy khách.\n");
+}
+
+void send_response(int client_sock, const char *message) {
+    send(client_sock, message, BUFFER_SIZE, 0);
+}
+
+void receive_directory(int client_sock) {
+    char command[BUFFER_SIZE];
+    while (1) {
+        memset(command, 0, BUFFER_SIZE);
+        if (recv(client_sock, command, BUFFER_SIZE, 0) <= 0) {
+            printf("Lỗi khi nhận dữ liệu từ máy khách.\n");
+            break;
+        }
+        if (strcmp(command, "END_OF_DIR") == 0) {
+            send_response(client_sock, "UploadDirectorySuccess");
+            break;
+        } else if (strcmp(command, "MKDIR") == 0) {
+            char dirname[BUFFER_SIZE];
+            recv(client_sock, dirname, BUFFER_SIZE, 0);
+            if (create_directories(dirname) == 0) {
+                printf("Đã tạo thư mục %s.\n", dirname);
+                send_response(client_sock, "DirectoryCreated");
+            } else {
+                printf("Không thể tạo thư mục %s.\n", dirname);
+                send_response(client_sock, "DirectoryCreationFailed");
+            }
+        } else if (strcmp(command, "UPLOAD") == 0) {
+            receive_file(client_sock);
+        }
+    }
+}
+
+// Hàm gửi thư mục tới máy khách
+void send_directory(int client_sock, const char *dir_path, int is_top_level) {
+    DIR *d = opendir(dir_path);
+    if (!d) {
+        if (is_top_level) {
+            send_response(client_sock, "DirectoryNotFound");
+        }
+        return;
+    }
+
+    if (is_top_level) {
+        send_response(client_sock, "DirectoryFound");
+    }
+
+    struct dirent *dir;
+    while ((dir = readdir(d)) != NULL) {
+        char path[BUFFER_SIZE];
+        if (strcmp(dir->d_name, ".") == 0 || strcmp(dir->d_name, "..") == 0)
+            continue;
+
+        snprintf(path, BUFFER_SIZE, "%s/%s", dir_path, dir->d_name);
+        struct stat st;
+        stat(path, &st);
+
+        if (S_ISDIR(st.st_mode)) {
+            // Gửi lệnh tạo thư mục
+            send_response(client_sock, "MKDIR");
+            send_response(client_sock, path);
+
+            // Đệ quy gửi thư mục con
+            send_directory(client_sock, path, 0);
+        } else if (S_ISREG(st.st_mode)) {
+            // Gửi lệnh gửi file
+            send_response(client_sock, "FILE");
+            send_response(client_sock, path);
+
+            FILE *fp = fopen(path, "rb");
+            if (!fp) {
+                printf("Không thể mở file %s\n", path);
+                continue;
+            }
+
+            // Lấy kích thước file
+            fseek(fp, 0, SEEK_END);
+            uint64_t filesize = ftell(fp);
+            fseek(fp, 0, SEEK_SET);
+
+            // Chuyển đổi kích thước file sang network byte order
+            uint64_t filesize_net = htonll(filesize);
+
+            // Gửi kích thước file
+            if (send_all(client_sock, &filesize_net, sizeof(filesize_net)) != 0) {
+                printf("Lỗi khi gửi kích thước file.\n");
+                fclose(fp);
+                continue;
+            }
+
+            // Gửi nội dung file
+            char buffer[BUFFER_SIZE];
+            size_t bytesRead;
+            while ((bytesRead = fread(buffer, 1, BUFFER_SIZE, fp)) > 0) {
+                if (send_all(client_sock, buffer, bytesRead) != 0) {
+                    printf("Lỗi khi gửi dữ liệu.\n");
+                    fclose(fp);
+                    return;
+                }
+            }
+            fclose(fp);
+            printf("Đã gửi file %s tới máy khách.\n", path);
+        }
+    }
+    closedir(d);
+
+    // Chỉ gửi "END_OF_DIR" ở cấp trên cùng
+    if (is_top_level) {
+        send_response(client_sock, "END_OF_DIR");
+    }
+}
+
+// Hàm đăng ký người dùng
+void register_user(int client_sock) {
+    char username[BUFFER_SIZE], password[BUFFER_SIZE];
+    recv(client_sock, username, BUFFER_SIZE, 0);
+    recv(client_sock, password, BUFFER_SIZE, 0);
+
+    // Kiểm tra xem người dùng đã tồn tại chưa
+    FILE *fp = fopen("users.txt", "a+");
+    if (!fp) {
+        send_response(client_sock, "Không thể mở file người dùng.");
+        return;
+    }
+
+    char line[BUFFER_SIZE], stored_user[BUFFER_SIZE];
+    int exists = 0;
+    while (fgets(line, sizeof(line), fp)) {
+        sscanf(line, "%s", stored_user);
+        if (strcmp(username, stored_user) == 0) {
+            exists = 1;
+            break;
+        }
+    }
+
+    if (exists) {
+        send_response(client_sock, "UserExists");
+    } else {
+        fprintf(fp, "%s %s\n", username, password);
+        send_response(client_sock, "RegisterSuccess");
+    }
+    fclose(fp);
+}
+
+// Hàm đăng nhập người dùng
+int login_user(int client_sock) {
+    char username[BUFFER_SIZE], password[BUFFER_SIZE];
+    recv(client_sock, username, BUFFER_SIZE, 0);
+    recv(client_sock, password, BUFFER_SIZE, 0);
+
+    FILE *fp = fopen("users.txt", "r");
+    if (!fp) {
+        send_response(client_sock, "Không thể mở file người dùng.");
+        return 0;
+    }
+
+    char line[BUFFER_SIZE], stored_user[BUFFER_SIZE], stored_pass[BUFFER_SIZE];
+    int authenticated = 0;
+    while (fgets(line, sizeof(line), fp)) {
+        sscanf(line, "%s %s", stored_user, stored_pass);
+        if (strcmp(username, stored_user) == 0 && strcmp(password, stored_pass) == 0) {
+            authenticated = 1;
+            break;
+        }
+    }
+
+    if (authenticated) {
+        send_response(client_sock, "LoginSuccess");
+    } else {
+        send_response(client_sock, "LoginFailed");
+    }
+    fclose(fp);
+    return authenticated;
+}
+
+// Hàm liệt kê file
+void list_files(int client_sock) {
+    DIR *d;
+    struct dirent *dir;
+    char buffer[BUFFER_SIZE] = "";
+
+    d = opendir(".");
+    if (d) {
+        while ((dir = readdir(d)) != NULL) {
+            strcat(buffer, dir->d_name);
+            strcat(buffer, "\n");
+        }
+        closedir(d);
+    }
+    send_response(client_sock, buffer);
+}
+
+// Hàm tạo thư mục
+void create_directory(int client_sock) {
+    char dirname[BUFFER_SIZE];
+    recv(client_sock, dirname, BUFFER_SIZE, 0);
+    if (mkdir(dirname, 0777) == 0) {
+        send_response(client_sock, "DirectoryCreated");
+    } else {
+        send_response(client_sock, "DirectoryCreationFailed");
+    }
+}
+
+// Hàm thay đổi thư mục
+void change_directory(int client_sock) {
+    char dirname[BUFFER_SIZE];
+    recv(client_sock, dirname, BUFFER_SIZE, 0);
+    if (chdir(dirname) == 0) {
+        send_response(client_sock, "DirectoryChanged");
+    } else {
+        send_response(client_sock, "DirectoryChangeFailed");
+    }
+}
+
+void receive_file(int client_sock) {
+    char filename[BUFFER_SIZE];
+    recv(client_sock, filename, BUFFER_SIZE, 0);
+
+    // Tạo các thư mục cha nếu chưa tồn tại
+    char file_dir[BUFFER_SIZE];
+    strcpy(file_dir, filename);
+    char *last_slash = strrchr(file_dir, '/');
+    if (last_slash != NULL) {
+        *last_slash = '\0';
+        if (create_directories(file_dir) != 0) {
+            printf("Không thể tạo thư mục %s.\n", file_dir);
+            send_response(client_sock, "UploadFailed");
+            return;
+        }
+    }
+
+    // Nhận kích thước file
+    uint64_t filesize_net;
+    if (recv_all(client_sock, &filesize_net, sizeof(filesize_net)) <= 0) {
+        printf("Lỗi khi nhận kích thước file.\n");
+        send_response(client_sock, "UploadFailed");
+        return;
+    }
+    uint64_t filesize = ntohll(filesize_net);
+
+    FILE *fp = fopen(filename, "wb");
+    if (!fp) {
+        send_response(client_sock, "FileOpenError");
+        return;
+    }
+
+    // Nhận nội dung file
+    char buffer[BUFFER_SIZE];
+    uint64_t totalReceived = 0;
+    while (totalReceived < filesize) {
+        size_t bytesToReceive = (filesize - totalReceived) < BUFFER_SIZE ? (filesize - totalReceived) : BUFFER_SIZE;
+        ssize_t bytesReceived = recv_all(client_sock, buffer, bytesToReceive);
+        if (bytesReceived <= 0) {
+            printf("Lỗi khi nhận dữ liệu.\n");
+            fclose(fp);
+            send_response(client_sock, "UploadFailed");
+            return;
+        }
+        fwrite(buffer, 1, bytesReceived, fp);
+        totalReceived += bytesReceived;
+    }
+    fclose(fp);
+    printf("Đã nhận file %s từ máy khách.\n", filename);
+    send_response(client_sock, "UploadSuccess");
+}
+
+// Hàm gửi file tới máy khách (DOWNLOAD)
+void send_file(int client_sock) {
+    char filename[BUFFER_SIZE];
+    recv(client_sock, filename, BUFFER_SIZE, 0);
+
+    FILE *fp = fopen(filename, "rb");
+    if (!fp) {
+        send_response(client_sock, "FileNotFound");
+        return;
+    } else {
+        send_response(client_sock, "FileFound");
+    }
+
+    // Lấy kích thước file
+    fseek(fp, 0, SEEK_END);
+    uint64_t filesize = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+
+    // Chuyển đổi kích thước file sang network byte order
+    uint64_t filesize_net = htonll(filesize);
+
+    // Gửi kích thước file
+    send_all(client_sock, &filesize_net, sizeof(filesize_net));
+
+    // Gửi nội dung file
+    char buffer[BUFFER_SIZE];
+    size_t bytesRead;
+    while ((bytesRead = fread(buffer, 1, BUFFER_SIZE, fp)) > 0) {
+        if (send_all(client_sock, buffer, bytesRead) != 0) {
+            printf("Lỗi khi gửi dữ liệu.\n");
+            fclose(fp);
+            return;
+        }
+    }
+    fclose(fp);
+    printf("Đã gửi file %s tới máy khách.\n", filename);
+}
+
+// Hàm tìm kiếm file
+void search_files(int client_sock) {
+    char query[BUFFER_SIZE];
+    recv(client_sock, query, BUFFER_SIZE, 0);
+
+    char results[BUFFER_SIZE] = "";
+    search_in_directory(".", query, results);
+
+    send_response(client_sock, results);
+}
+
+void search_in_directory(const char *dir_path, const char *query, char *results) {
+    DIR *d = opendir(dir_path);
+    if (!d) return;
+
+    struct dirent *dir;
+    while ((dir = readdir(d)) != NULL) {
+        char path[BUFFER_SIZE];
+        if (strcmp(dir->d_name, ".") == 0 || strcmp(dir->d_name, "..") == 0)
+            continue;
+        snprintf(path, BUFFER_SIZE, "%s/%s", dir_path, dir->d_name);
+
+        if (dir->d_type == DT_DIR) {
+            search_in_directory(path, query, results);
+        } else if (dir->d_type == DT_REG) {
+            if (strstr(dir->d_name, query) != NULL) {
+                strcat(results, path);
+                strcat(results, "\n");
+            }
+        }
+    }
+    closedir(d);
+}
+
+./src (trong đây sẽ là các phần xử lý)
+./src/db.c:
+// db.c
+#include <stdio.h>
+#include <stdlib.h>
+#include <mysql/mysql.h>
+#include "../include/db.h"
+
+// Hàm kết nối đến cơ sở dữ liệu
+int connect_db(DBConnection *db, const char *host, const char *user, const char *password, const char *dbname)
+{
+    db->conn = mysql_init(NULL);
+    if (db->conn == NULL)
+    {
+        fprintf(stderr, "mysql_init() failed\n");
+        return EXIT_FAILURE;
+    }
+
+    if (mysql_real_connect(db->conn, host, user, password, dbname, 0, NULL, 0) == NULL)
+    {
+        fprintf(stderr, "mysql_real_connect() failed\n");
+        mysql_close(db->conn);
+        return EXIT_FAILURE;
+    }
+    return EXIT_SUCCESS;
+}
+
+// Hàm thực thi câu lệnh SQL (INSERT, UPDATE, DELETE)
+MYSQL_RES *execute_query(DBConnection *db, const char *query)
+{
+    if (mysql_query(db->conn, query))
+    {
+        fprintf(stderr, "MySQL query error: %s\n", mysql_error(db->conn));
+        return NULL;
+    }
+    return mysql_store_result(db->conn);
+}
+
+// Hàm lấy kết quả của câu lệnh SELECT
+int fetch_query_result(DBConnection *db, const char *query)
+{
+    if (mysql_query(db->conn, query))
+    {
+        fprintf(stderr, "QUERY FAILED: %s\n", mysql_error(db->conn));
+        return EXIT_FAILURE;
+    }
+
+    db->res = mysql_store_result(db->conn);
+    if (db->res == NULL)
+    {
+        fprintf(stderr, "STORE RESULT FAILED: %s\n", mysql_error(db->conn));
+        return EXIT_FAILURE;
+    }
+
+    // In kết quả truy vấn ra
+    while ((db->row = mysql_fetch_row(db->res)) != NULL)
+    {
+        for (int i = 0; i < mysql_num_fields(db->res); i++)
+        {
+            printf("%s ", db->row[i] ? db->row[i] : "NULL");
+        }
+        printf("\n");
+    }
+    return EXIT_SUCCESS;
+}
+
+// Hàm đóng kết nối cơ sở dữ liệu
+void close_db(DBConnection *db)
+{
+    if (db->conn)
+    {
+        mysql_close(db->conn);
+    }
+}
+./src/gui.c ./src/main.c 
+có một phần để xử lý tạo group và phân quyền 
+./src/group/client/client.c:
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+
+#define PORT 8084
+#define BUFFER_SIZE 1024
+#define MAX_GROUP_NAME 50
+#define MAX_MESSAGE_LENGTH 900 // Dành khoảng trống cho "SEND " và group_name
+
+void print_menu()
+{
+    printf("\nOptions:\n");
+    printf("1. Create group\n");
+    printf("2. Join group\n");
+    printf("3. Leave group\n");
+    printf("4. Send message\n");
+    printf("5. Add member\n");
+    printf("6. Remove member\n");
+    printf("7. List groups\n");
+    printf("8. List users\n");
+    printf("9. List messages\n");
+    printf("10. Exit\n");
+    printf("Choose an option: ");
+}
+
+int main()
+{
+    int client_socket;
+    struct sockaddr_in server_address;
+    char buffer[BUFFER_SIZE];
+    char username[50];
+    char password[50];
+    char email[100];
+    char group_name[MAX_GROUP_NAME];
+    char message[MAX_MESSAGE_LENGTH];
+
+    // Tạo socket
+    if ((client_socket = socket(AF_INET, SOCK_STREAM, 0)) < 0)
+    {
+        perror("Socket creation error");
+        return -1;
+    }
+
+    server_address.sin_family = AF_INET;
+    server_address.sin_port = htons(PORT);
+
+    // Địa chỉ server
+    if (inet_pton(AF_INET, "127.0.0.1", &server_address.sin_addr) <= 0)
+    {
+        perror("Invalid address");
+        return -1;
+    }
+
+    // Kết nối đến server
+    if (connect(client_socket, (struct sockaddr *)&server_address, sizeof(server_address)) < 0)
+    {
+        perror("Connection failed");
+        return -1;
+    }
+
+    printf("Enter your username: ");
+    fgets(username, sizeof(username), stdin);
+    username[strcspn(username, "\n")] = 0; // Loại bỏ ký tự newline
+
+    printf("Enter your password: ");
+    fgets(password, sizeof(password), stdin);
+    password[strcspn(password, "\n")] = 0; // Loại bỏ ký tự newline
+
+    printf("Enter your email: ");
+    fgets(email, sizeof(email), stdin);
+    email[strcspn(email, "\n")] = 0; // Loại bỏ ký tự newline
+
+    // Gửi username, password, và email đến server
+    snprintf(buffer, sizeof(buffer), "%s %s %s", username, password, email);
+    send(client_socket, buffer, strlen(buffer), 0);
+
+    while (1)
+    {
+        print_menu();
+        int option;
+        scanf("%d", &option);
+        getchar(); // Xóa newline từ input buffer
+
+        switch (option)
+        {
+        case 1:
+            printf("Enter group name to create: ");
+            fgets(group_name, sizeof(group_name), stdin);
+            group_name[strcspn(group_name, "\n")] = 0;
+            snprintf(buffer, sizeof(buffer), "CREATE_GROUP %s", group_name);
+            send(client_socket, buffer, strlen(buffer), 0);
+            break;
+
+        case 2:
+            printf("Enter group name to join: ");
+            fgets(group_name, sizeof(group_name), stdin);
+            group_name[strcspn(group_name, "\n")] = 0;
+            snprintf(buffer, sizeof(buffer), "JOIN_GROUP %s", group_name);
+            send(client_socket, buffer, strlen(buffer), 0);
+            break;
+
+        case 3:
+            printf("Enter group name to leave: ");
+            fgets(group_name, sizeof(group_name), stdin);
+            group_name[strcspn(group_name, "\n")] = 0;
+            snprintf(buffer, sizeof(buffer), "LEAVE_GROUP %s", group_name);
+            send(client_socket, buffer, strlen(buffer), 0);
+            break;
+
+        case 4:
+            printf("Enter group name: ");
+            fgets(group_name, sizeof(group_name), stdin);
+            group_name[strcspn(group_name, "\n")] = 0;
+            printf("Enter your message: ");
+            fgets(message, sizeof(message), stdin);
+            message[strcspn(message, "\n")] = 0;
+
+            if (strlen(group_name) + strlen(message) + 5 >= BUFFER_SIZE)
+            {
+                printf("Message too long. Please try again.\n");
+                break;
+            }
+
+            snprintf(buffer, sizeof(buffer), "SEND %s %s", group_name, message);
+            send(client_socket, buffer, strlen(buffer), 0);
+            break;
+
+        case 5:
+            printf("Enter group name to add member: ");
+            fgets(group_name, sizeof(group_name), stdin);
+            group_name[strcspn(group_name, "\n")] = 0;
+            printf("Enter username of member to add: ");
+            fgets(message, sizeof(message), stdin);
+            message[strcspn(message, "\n")] = 0;
+
+            if (strlen(group_name) + strlen(message) + 11 >= BUFFER_SIZE)
+            {
+                printf("Input too long. Please try again.\n");
+                break;
+            }
+
+            snprintf(buffer, sizeof(buffer), "ADD_MEMBER %s %s", group_name, message);
+            send(client_socket, buffer, strlen(buffer), 0);
+            break;
+
+        case 6:
+            printf("Enter group name to remove member: ");
+            fgets(group_name, sizeof(group_name), stdin);
+            group_name[strcspn(group_name, "\n")] = 0;
+            printf("Enter username of member to remove: ");
+            fgets(message, sizeof(message), stdin);
+            message[strcspn(message, "\n")] = 0;
+
+            if (strlen(group_name) + strlen(message) + 14 >= BUFFER_SIZE)
+            {
+                printf("Input too long. Please try again.\n");
+                break;
+            }
+
+            snprintf(buffer, sizeof(buffer), "REMOVE_MEMBER %s %s", group_name, message);
+            send(client_socket, buffer, strlen(buffer), 0);
+            break;
+
+        case 7:
+            snprintf(buffer, sizeof(buffer), "LIST_GROUPS");
+            send(client_socket, buffer, strlen(buffer), 0);
+            break;
+
+        case 8:
+            snprintf(buffer, sizeof(buffer), "LIST_USERS");
+            send(client_socket, buffer, strlen(buffer), 0);
+            break;
+
+        case 9: // List Messages
+            printf("Enter group name to list messages: ");
+            fgets(group_name, sizeof(group_name), stdin);
+            group_name[strcspn(group_name, "\n")] = 0;
+
+            if (strlen(group_name) + 14 >= BUFFER_SIZE) // "LIST_MESSAGES " + group_name
+            {
+                printf("Group name too long. Please try again.\n");
+                break;
+            }
+
+            snprintf(buffer, sizeof(buffer), "LIST_MESSAGES %s", group_name);
+            send(client_socket, buffer, strlen(buffer), 0);
+
+            // Nhận phản hồi từ server
+            while (1)
+            {
+                int bytes_received = recv(client_socket, buffer, sizeof(buffer) - 1, 0);
+                if (bytes_received > 0)
+                {
+                    buffer[bytes_received] = '\0';
+
+                    // Kiểm tra nếu server gửi thông báo kết thúc danh sách
+                    if (strcmp(buffer, "END_OF_MESSAGES\n") == 0)
+                    {
+                        printf("End of messages.\n");
+                        break;
+                    }
+
+                    // In từng tin nhắn
+                    printf("Message: %s\n", buffer);
+                }
+                else
+                {
+                    printf("Error receiving data from server.\n");
+                    break;
+                }
+            }
+            break;
+
+        case 10:
+            printf("Exiting...\n");
+            close(client_socket);
+            exit(0);
+
+        default:
+            printf("Invalid option. Please try again.\n");
+        }
+
+        // Nhận phản hồi từ server
+        int bytes_received = recv(client_socket, buffer, sizeof(buffer) - 1, 0);
+        if (bytes_received > 0)
+        {
+            buffer[bytes_received] = '\0';
+            printf("Server: %s\n", buffer);
+        }
+    }
+
+    close(client_socket);
+    return 0;
+}
+./src/group/server/server.c:
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <pthread.h>
+#include "../../../include/db.h"
+
+#define PORT 8084
+#define BUFFER_SIZE 1024
+#define MAX_CLIENTS 100
+
+typedef struct
+{
+    int socket;
+    int id;
+    char username[50];
+    char password[50];
+    char email[100];
+} Client;
+
+Client *clients[MAX_CLIENTS];
+int client_count = 0;
+
+pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+DBConnection db;
+
+// Kiểm tra xem một nhóm có tồn tại không, trả về group_id nếu có
+int get_group_id(const char *group_name)
+{
+    char query[BUFFER_SIZE];
+    MYSQL_RES *res = NULL;
+    MYSQL_ROW row;
+    int group_id = -1;
+
+    snprintf(query, sizeof(query),
+             "SELECT id FROM chat_groups WHERE group_name='%s'", group_name);
+    if (mysql_query(db.conn, query) != 0)
+    {
+        fprintf(stderr, "Error querying group_id: %s\n", mysql_error(db.conn));
+        return -1;
+    }
+
+    res = mysql_store_result(db.conn);
+    if (res && (row = mysql_fetch_row(res)))
+    {
+        group_id = atoi(row[0]);
+    }
+    mysql_free_result(res);
+    return group_id;
+}
+
+// Kiểm tra xem một người dùng có tồn tại không, trả về user_id nếu có
+int get_user_id(const char *username)
+{
+    char query[BUFFER_SIZE];
+    MYSQL_RES *res = NULL;
+    MYSQL_ROW row;
+    int user_id = -1;
+
+    snprintf(query, sizeof(query),
+             "SELECT id FROM users WHERE username='%s'", username);
+    if (mysql_query(db.conn, query) != 0)
+    {
+        fprintf(stderr, "Error querying user_id: %s\n", mysql_error(db.conn));
+        return -1;
+    }
+
+    res = mysql_store_result(db.conn);
+    if (res && (row = mysql_fetch_row(res)))
+    {
+        user_id = atoi(row[0]);
+    }
+    mysql_free_result(res);
+    return user_id;
+}
+
+// Kiểm tra xem một người dùng có phải admin của nhóm không
+int is_group_admin(int user_id, int group_id)
+{
+    char query[BUFFER_SIZE];
+    MYSQL_RES *res = NULL;
+    MYSQL_ROW row;
+    int is_admin = 0;
+
+    snprintf(query, sizeof(query),
+             "SELECT role FROM group_members WHERE user_id=%d AND group_id=%d",
+             user_id, group_id);
+    if (mysql_query(db.conn, query) != 0)
+    {
+        fprintf(stderr, "Error querying admin role: %s\n", mysql_error(db.conn));
+        return 0;
+    }
+
+    res = mysql_store_result(db.conn);
+    if (res && (row = mysql_fetch_row(res)))
+    {
+        if (strcmp(row[0], "admin") == 0)
+        {
+            is_admin = 1;
+        }
+    }
+    mysql_free_result(res);
+    return is_admin;
+}
+
+// Kiểm tra xem một người dùng có phải thành viên của nhóm không
+int is_group_member(int user_id, int group_id)
+{
+    char query[BUFFER_SIZE];
+    MYSQL_RES *res = NULL;
+    int is_member = 0;
+
+    snprintf(query, sizeof(query),
+             "SELECT 1 FROM group_members WHERE user_id=%d AND group_id=%d",
+             user_id, group_id);
+    if (mysql_query(db.conn, query) != 0)
+    {
+        fprintf(stderr, "Error querying group membership: %s\n", mysql_error(db.conn));
+        return 0;
+    }
+
+    res = mysql_store_result(db.conn);
+    if (res && mysql_num_rows(res) > 0)
+    {
+        is_member = 1;
+    }
+    mysql_free_result(res);
+    return is_member;
+}
+
+void broadcast_message(int group_id, char *message, Client *sender)
+{
+    char query[BUFFER_SIZE];
+    MYSQL_RES *res = NULL;
+    MYSQL_ROW row;
+
+    pthread_mutex_lock(&mutex);
+
+    // Truy vấn lấy danh sách các thành viên trong nhóm
+    snprintf(query, sizeof(query),
+             "SELECT users.id FROM users "
+             "JOIN group_members ON users.id = group_members.user_id "
+             "WHERE group_members.group_id=%d",
+             group_id);
+    if (mysql_query(db.conn, query) != 0)
+    {
+        fprintf(stderr, "Error querying group members: %s\n", mysql_error(db.conn));
+        pthread_mutex_unlock(&mutex);
+        return;
+    }
+    res = mysql_store_result(db.conn);
+    if (res == NULL)
+    {
+        fprintf(stderr, "Error storing result: %s\n", mysql_error(db.conn));
+        pthread_mutex_unlock(&mutex);
+        return;
+    }
+
+    // Lưu tin nhắn vào bảng messages
+    snprintf(query, sizeof(query),
+             "INSERT INTO messages (sender_id, message, group_id) "
+             "VALUES (%d, '%s', %d)",
+             sender->id, message, group_id);
+    if (mysql_query(db.conn, query) != 0)
+    {
+        fprintf(stderr, "Error inserting message: %s\n", mysql_error(db.conn));
+    }
+
+    // Giải phóng kết quả truy vấn
+    mysql_free_result(res);
+
+    pthread_mutex_unlock(&mutex);
+}
+
+int insert_group(DBConnection *db, const char *group_name, int creator_id)
+{
+    char query[256];
+    snprintf(query, sizeof(query),
+             "INSERT INTO chat_groups (group_name, creator_id) VALUES ('%s', %d)",
+             group_name, creator_id);
+
+    if (mysql_query(db->conn, query))
+    {
+        fprintf(stderr, "Error inserting group: %s\n", mysql_error(db->conn));
+        return -1; // Trả về -1 nếu xảy ra lỗi
+    }
+
+    return (int)mysql_insert_id(db->conn); // Trả về ID của nhóm vừa được tạo
+}
+
+int add_user_to_group(DBConnection *db, int group_id, int user_id, const char *role)
+{
+    char query[256];
+    snprintf(query, sizeof(query),
+             "INSERT INTO group_members (group_id, user_id, role) VALUES (%d, %d, '%s')",
+             group_id, user_id, role);
+
+    if (mysql_query(db->conn, query))
+    {
+        fprintf(stderr, "Error adding user to group: %s\n", mysql_error(db->conn));
+        return -1; // Trả về -1 nếu xảy ra lỗi
+    }
+
+    return 0; // Trả về 0 nếu thành công
+}
+
+int remove_user_from_group(DBConnection *db, int group_id, int user_id)
+{
+    char query[256];
+    snprintf(query, sizeof(query),
+             "DELETE FROM group_members WHERE group_id = %d AND user_id = %d",
+             group_id, user_id);
+
+    if (mysql_query(db->conn, query))
+    {
+        fprintf(stderr, "Error removing user from group: %s\n", mysql_error(db->conn));
+        return -1; // Trả về -1 nếu xảy ra lỗi
+    }
+
+    return 0; // Trả về 0 nếu thành công
+}
+
+void list_user_groups(DBConnection *db, int user_id, char *result, size_t result_size)
+{
+    char query[256];
+    snprintf(query, sizeof(query),
+             "SELECT g.name FROM groups g "
+             "INNER JOIN group_members gm ON g.id = gm.group_id "
+             "WHERE gm.user_id = %d",
+             user_id);
+
+    if (mysql_query(db->conn, query))
+    {
+        fprintf(stderr, "Error listing groups: %s\n", mysql_error(db->conn));
+        snprintf(result, result_size, "Failed to retrieve groups.\n");
+        return;
+    }
+
+    MYSQL_RES *res = mysql_store_result(db->conn);
+    if (!res)
+    {
+        fprintf(stderr, "Error storing result: %s\n", mysql_error(db->conn));
+        snprintf(result, result_size, "Failed to retrieve groups.\n");
+        return;
+    }
+
+    MYSQL_ROW row;
+    size_t offset = 0;
+    while ((row = mysql_fetch_row(res)))
+    {
+        offset += snprintf(result + offset, result_size - offset, "%s\n", row[0]);
+        if (offset >= result_size)
+            break; // Tránh tràn bộ đệm
+    }
+
+    mysql_free_result(res);
+
+    if (offset == 0)
+    {
+        snprintf(result, result_size, "You are not in any groups.\n");
+    }
+}
+
+void list_users(DBConnection *db, char *result, size_t result_size)
+{
+    char query[256];
+    snprintf(query, sizeof(query), "SELECT username FROM users");
+
+    if (mysql_query(db->conn, query))
+    {
+        fprintf(stderr, "Error listing users: %s\n", mysql_error(db->conn));
+        snprintf(result, result_size, "Failed to retrieve users.\n");
+        return;
+    }
+
+    MYSQL_RES *res = mysql_store_result(db->conn);
+    if (!res)
+    {
+        fprintf(stderr, "Error storing result: %s\n", mysql_error(db->conn));
+        snprintf(result, result_size, "Failed to retrieve users.\n");
+        return;
+    }
+
+    MYSQL_ROW row;
+    size_t offset = 0;
+    while ((row = mysql_fetch_row(res)))
+    {
+        offset += snprintf(result + offset, result_size - offset, "%s\n", row[0]);
+        if (offset >= result_size)
+            break; // Tránh tràn bộ đệm
+    }
+
+    mysql_free_result(res);
+
+    if (offset == 0)
+    {
+        snprintf(result, result_size, "No users found.\n");
+    }
+}
+
+int list_group_messages(DBConnection *db, int group_id, int user_id, int client_socket)
+{
+    char query[BUFFER_SIZE];
+    MYSQL_RES *res = NULL;
+    MYSQL_ROW row;
+
+    // Kiểm tra nếu người dùng là thành viên của nhóm
+    if (!is_group_member(user_id, group_id))
+    {
+        send(client_socket, "You are not a member of this group.\n", 37, 0);
+        return -1; // Trả về -1 nếu người dùng không phải thành viên
+    }
+
+    // Truy vấn tin nhắn từ nhóm
+    snprintf(query, sizeof(query),
+             "SELECT m.id AS message_id, m.sender_id, m.message "
+             "FROM messages m "
+             "WHERE m.group_id = %d "
+             "ORDER BY m.created_at ASC",
+             group_id);
+
+    if (mysql_query(db->conn, query) != 0)
+    {
+        fprintf(stderr, "Error querying group messages: %s\n", mysql_error(db->conn));
+        send(client_socket, "Error retrieving group messages.\n", 33, 0);
+        return -1; // Trả về -1 nếu có lỗi
+    }
+
+    res = mysql_store_result(db->conn);
+    if (res == NULL)
+    {
+        fprintf(stderr, "Error storing result: %s\n", mysql_error(db->conn));
+        send(client_socket, "Error retrieving group messages.\n", 33, 0);
+        return -1; // Trả về -1 nếu không có kết quả
+    }
+
+    // Gửi danh sách tin nhắn tới client
+    char message_buffer[BUFFER_SIZE];
+    int message_count = 0;
+    while ((row = mysql_fetch_row(res)) != NULL)
+    {
+        snprintf(message_buffer, sizeof(message_buffer), "Message ID: %s | Sender ID: %s | Message: %s\n",
+                 row[0],  // message_id
+                 row[1],  // sender_id
+                 row[2]); // message
+        send(client_socket, message_buffer, strlen(message_buffer), 0);
+        message_count++;
+    }
+
+    if (message_count == 0)
+    {
+        send(client_socket, "No messages in this group.\n", 26, 0);
+    }
+    else
+    {
+        send(client_socket, "END_OF_MESSAGES\n", 17, 0);
+    }
+
+    mysql_free_result(res);
+    return 0; // Trả về 0 nếu thành công
+}
+
+void handle_client(void *arg)
+{
+    Client *client = (Client *)arg;
+    char buffer[BUFFER_SIZE];
+
+    // Nhận username, password và email từ client
+    recv(client->socket, buffer, sizeof(buffer), 0);
+    sscanf(buffer, "%s %s %s", client->username, client->password, client->email);
+
+    // Lưu thông tin người dùng vào cơ sở dữ liệu
+    char insert_query[BUFFER_SIZE];
+    snprintf(insert_query, sizeof(insert_query),
+             "INSERT INTO users (username, password, email, status) "
+             "VALUES ('%s', '%s', '%s', 'online')",
+             client->username, client->password, client->email);
+
+    pthread_mutex_lock(&mutex);
+    if (execute_query(&db, insert_query) == EXIT_SUCCESS)
+    {
+        printf("User %s registered successfully.\n", client->username);
+        client->id = mysql_insert_id(db.conn);
+    }
+    else
+    {
+        printf("Failed to register user %s.\n", client->username);
+    }
+    pthread_mutex_unlock(&mutex);
+
+    while (1)
+    {
+        int bytes_received = recv(client->socket, buffer, BUFFER_SIZE, 0);
+        if (bytes_received <= 0)
+        {
+            printf("Client %s disconnected.\n", client->username);
+
+            // Cập nhật trạng thái người dùng
+            snprintf(insert_query, sizeof(insert_query),
+                     "UPDATE users SET status='offline' WHERE id='%d'",
+                     client->id);
+
+            pthread_mutex_lock(&mutex);
+            execute_query(&db, insert_query);
+            pthread_mutex_unlock(&mutex);
+
+            close(client->socket);
+            free(client);
+            pthread_exit(NULL);
+        }
+
+        buffer[bytes_received] = '\0';
+        printf("Received from %s: %s\n", client->username, buffer);
+
+        if (strncmp(buffer, "CREATE_GROUP", 12) == 0)
+        {
+            char group_name[50];
+            sscanf(buffer + 13, "%s", group_name);
+
+            pthread_mutex_lock(&mutex);
+            int group_id = insert_group(&db, group_name, client->id);
+            if (group_id == -1)
+            {
+                send(client->socket, "Failed to create group.\n", 24, 0);
+            }
+            else if (add_user_to_group(&db, group_id, client->id, "admin") == 0)
+            {
+                send(client->socket, "Group created successfully.\n", 29, 0);
+            }
+            else
+            {
+                send(client->socket, "Failed to assign admin role.\n", 28, 0);
+            }
+            pthread_mutex_unlock(&mutex);
+        }
+        else if (strncmp(buffer, "JOIN_GROUP", 10) == 0)
+        {
+            char group_name[50];
+            sscanf(buffer + 11, "%s", group_name);
+
+            pthread_mutex_lock(&mutex);
+            int group_id = get_group_id(group_name);
+            if (group_id == -1)
+            {
+                send(client->socket, "Group not found.\n", 17, 0);
+            }
+            else if (is_group_member(client->id, group_id))
+            {
+                send(client->socket, "You are already a member of this group.\n", 39, 0);
+            }
+            else if (add_user_to_group(&db, group_id, client->id, "member") == 0)
+            {
+                send(client->socket, "Joined group successfully.\n", 27, 0);
+            }
+            else
+            {
+                send(client->socket, "Failed to join group.\n", 22, 0);
+            }
+            pthread_mutex_unlock(&mutex);
+        }
+        else if (strncmp(buffer, "ADD_MEMBER", 10) == 0)
+        {
+            char group_name[50], username_to_add[50];
+            sscanf(buffer + 11, "%s %s", group_name, username_to_add);
+
+            pthread_mutex_lock(&mutex);
+
+            int group_id = get_group_id(group_name);
+            if (group_id == -1)
+            {
+                send(client->socket, "Group does not exist.\n", 22, 0);
+                pthread_mutex_unlock(&mutex);
+                continue;
+            }
+
+            int user_id_to_add = get_user_id(username_to_add);
+            if (user_id_to_add == -1)
+            {
+                send(client->socket, "User does not exist.\n", 21, 0);
+                pthread_mutex_unlock(&mutex);
+                continue;
+            }
+
+            if (add_user_to_group(&db, group_id, user_id_to_add, "member") == 0)
+            {
+                send(client->socket, "User added to the group successfully.\n", 36, 0);
+            }
+            else
+            {
+                send(client->socket, "Failed to add user to the group.\n", 33, 0);
+            }
+
+            pthread_mutex_unlock(&mutex);
+        }
+        else if (strncmp(buffer, "SEND", 4) == 0)
+        {
+            char group_name[50], message[BUFFER_SIZE];
+            sscanf(buffer + 5, "%s %[^\n]", group_name, message);
+
+            // Kiểm tra nếu tên nhóm hoặc tin nhắn không hợp lệ
+            if (strlen(group_name) == 0 || strlen(message) == 0)
+            {
+                send(client->socket, "Invalid group name or message.\n", 32, 0);
+                continue; // Quay lại nhận dữ liệu mới
+            }
+
+            int group_id = get_group_id(group_name);
+            if (group_id == -1)
+            {
+                send(client->socket, "Group not found.\n", 17, 0);
+            }
+            else
+            {
+                // Gọi hàm broadcast_message
+                broadcast_message(group_id, message, client);
+            }
+
+            // Gửi xác nhận lại cho người gửi
+            send(client->socket, "Message sent successfully.\n", 27, 0);
+            pthread_mutex_unlock(&mutex);
+        }
+        else if (strncmp(buffer, "REMOVE_MEMBER", 13) == 0)
+        {
+            char group_name[50], username_to_remove[50];
+            sscanf(buffer + 14, "%s %s", group_name, username_to_remove);
+
+            pthread_mutex_lock(&mutex);
+
+            int group_id = get_group_id(group_name);
+            if (group_id == -1)
+            {
+                send(client->socket, "Group does not exist.\n", 22, 0);
+            }
+            else if (is_group_admin(client->id, group_id))
+            {
+                send(client->socket, "You are not an admin of this group.\n", 37, 0);
+            }
+            else
+            {
+                int user_id_to_remove = get_user_id(username_to_remove);
+                if (user_id_to_remove == -1)
+                {
+                    send(client->socket, "User does not exist.\n", 21, 0);
+                }
+                else if (remove_user_from_group(&db, group_id, user_id_to_remove) == 0)
+                {
+                    send(client->socket, "User removed from the group successfully.\n", 42, 0);
+                }
+                else
+                {
+                    send(client->socket, "Failed to remove user from the group.\n", 38, 0);
+                }
+            }
+
+            pthread_mutex_unlock(&mutex);
+        }
+        else if (strncmp(buffer, "LEAVE_GROUP", 11) == 0)
+        {
+            char group_name[50];
+            sscanf(buffer + 12, "%s", group_name);
+
+            pthread_mutex_lock(&mutex);
+
+            int group_id = get_group_id(group_name);
+            if (group_id == -1)
+            {
+                send(client->socket, "Group not found.\n", 17, 0);
+            }
+            else if (!is_group_member(client->id, group_id))
+            {
+                send(client->socket, "You are not a member of this group.\n", 36, 0);
+            }
+            else if (remove_user_from_group(&db, group_id, client->id) == 0)
+            {
+                send(client->socket, "You have left the group successfully.\n", 39, 0);
+            }
+            else
+            {
+                send(client->socket, "Failed to leave the group.\n", 27, 0);
+            }
+
+            pthread_mutex_unlock(&mutex);
+        }
+        else if (strncmp(buffer, "LIST_GROUPS", 11) == 0)
+        {
+            char response[BUFFER_SIZE] = {0};
+
+            pthread_mutex_lock(&mutex);
+            list_user_groups(&db, client->id, response, sizeof(response));
+            pthread_mutex_unlock(&mutex);
+
+            send(client->socket, response, strlen(response), 0);
+        }
+        else if (strncmp(buffer, "LIST_USERS", 10) == 0)
+        {
+            char response[BUFFER_SIZE] = {0};
+
+            pthread_mutex_lock(&mutex);
+            list_users(&db, response, sizeof(response));
+            pthread_mutex_unlock(&mutex);
+
+            send(client->socket, response, strlen(response), 0);
+        }
+        else if (strncmp(buffer, "LIST_GROUP_MESSAGES", 19) == 0)
+        {
+            char group_name[50];
+            sscanf(buffer + 20, "%s", group_name);
+
+            pthread_mutex_lock(&mutex);
+            int group_id = get_group_id(group_name);
+            if (group_id == -1)
+            {
+                send(client->socket, "Group not found.\n", 17, 0);
+            }
+            else
+            {
+                int result = list_group_messages(&db, group_id, client->id, client->socket);
+                if (result == -1)
+                {
+                    send(client->socket, "Failed to retrieve messages.\n", 28, 0);
+                }
+            }
+            pthread_mutex_unlock(&mutex);
+        }
+    }
+}
+
+int main()
+{
+    int server_socket, new_socket;
+    struct sockaddr_in server_address, client_address;
+    socklen_t client_len = sizeof(client_address);
+
+    if (connect_db(&db, "localhost", "root", "", "chat_app") != EXIT_SUCCESS)
+    {
+        fprintf(stderr, "Failed to connect to database.\n");
+        exit(EXIT_FAILURE);
+    }
+
+    if ((server_socket = socket(AF_INET, SOCK_STREAM, 0)) == 0)
+    {
+        perror("Socket failed");
+        exit(EXIT_FAILURE);
+    }
+
+    server_address.sin_family = AF_INET;
+    server_address.sin_addr.s_addr = INADDR_ANY;
+    server_address.sin_port = htons(PORT);
+
+    if (bind(server_socket, (struct sockaddr *)&server_address, sizeof(server_address)) < 0)
+    {
+        perror("Bind failed");
+        close(server_socket);
+        exit(EXIT_FAILURE);
+    }
+
+    if (listen(server_socket, 3) < 0)
+    {
+        perror("Listen failed");
+        close(server_socket);
+        exit(EXIT_FAILURE);
+    }
+
+    printf("Server started on port %d\n", PORT);
+
+    while (1)
+    {
+        new_socket = accept(server_socket, (struct sockaddr *)&client_address, &client_len);
+        if (new_socket < 0)
+        {
+            perror("Accept failed");
+            continue;
+        }
+
+        Client *new_client = (Client *)malloc(sizeof(Client));
+        new_client->socket = new_socket;
+
+        pthread_mutex_lock(&mutex);
+        clients[client_count++] = new_client;
+        pthread_mutex_unlock(&mutex);
+
+        pthread_t thread;
+        pthread_create(&thread, NULL, (void *)handle_client, (void *)new_client);
+    }
+
+    close(server_socket);
+    close_db(&db);
+    return 0;
+}
+còn đây là phần database 
+./create_database.SQL:
+DROP DATABASE IF EXISTS chat_app;
+
+-- Tạo cơ sở dữ liệu nếu chưa tồn tại
+CREATE DATABASE IF NOT EXISTS chat_app;
+
+-- Chọn cơ sở dữ liệu để sử dụng
+USE chat_app;
+
+-- 1. Tạo bảng users
+CREATE TABLE IF NOT EXISTS users (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    username VARCHAR(50) NOT NULL UNIQUE,
+    password VARCHAR(255) NOT NULL,
+    email VARCHAR(100) NOT NULL UNIQUE,
+    status ENUM('online', 'offline') DEFAULT 'offline',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 2. Tạo bảng chat_groups
+CREATE TABLE IF NOT EXISTS chat_groups (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    group_name VARCHAR(100) NOT NULL,
+    creator_id INT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (creator_id) REFERENCES users(id)
+);
+
+-- 3. Tạo bảng messages
+CREATE TABLE IF NOT EXISTS messages (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    sender_id INT NOT NULL,
+    receiver_id INT DEFAULT NULL,
+    message TEXT NOT NULL,
+    group_id INT DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (sender_id) REFERENCES users(id),
+    FOREIGN KEY (receiver_id) REFERENCES users(id),
+    FOREIGN KEY (group_id) REFERENCES chat_groups(id)
+);
+
+-- 4. Tạo bảng group_members
+CREATE TABLE IF NOT EXISTS group_members (
+    group_id INT NOT NULL,
+    user_id INT NOT NULL,
+    role ENUM('member', 'admin') DEFAULT 'member',
+    joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (group_id, user_id),
+    FOREIGN KEY (group_id) REFERENCES chat_groups(id),  -- Thay đổi tên bảng ở đây
+    FOREIGN KEY (user_id) REFERENCES users(id)
+);
+
+
+-- 5. Tạo bảng files
+CREATE TABLE IF NOT EXISTS files (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    sender_id INT NOT NULL,
+    receiver_id INT NOT NULL,
+    group_id INT DEFAULT NULL,
+    file_name VARCHAR(255) NOT NULL,
+    file_type VARCHAR(50),
+    file_path VARCHAR(255) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (sender_id) REFERENCES users(id),
+    FOREIGN KEY (receiver_id) REFERENCES users(id),
+    FOREIGN KEY (group_id) REFERENCES chat_groups(id)
+);
+
+-- Sau khi chạy xong các câu lệnh trên, bạn đã tạo xong cơ sở dữ liệu và các bảng.
+
+Phần trên là phần source code tôi đã hoàn thành, hãy giúp tôi kết hợp, phần tách thành các file code phù hợp, sửa lại và hoàn thiện để phù hợp với yêu cầu tôi đã đưa ra ở trên. Tôi muốn bạn hãy cung cấp cho tôi thật đầy đủ từ cấu trúc thư mục, nội dung đầy đủ của từng file một, đảm bảo tôi có thể chạy tốt trên máy của tôi, code nên tham khảo những gì tôi đã gửi để đảm bảo sự dụng các công nghệ tôi đang sử dụng.
